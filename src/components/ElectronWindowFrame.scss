@@ -1,0 +1,23 @@
+body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  position: fixed;
+  inset: 0;
+}
+
+.my-app-frame {
+  width: 100vw;
+  height: 100vh;
+  background-color: #1a1b26;
+  font-family: 'Satoshi', system-ui, -apple-system, sans-serif;
+}
+
+.minimized * {
+  visibility: hidden !important;
+  opacity: 0 !important;
+}
+
+.maximized {
+  border-radius: 0;
+}
