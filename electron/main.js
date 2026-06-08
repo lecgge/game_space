@@ -17,7 +17,7 @@ function getIconPath() {
   // In production (packaged), icon is in resources/
   const isDev = process.env.NODE_ENV === 'development';
   if (isDev) {
-    return path.join(__dirname, '..', 'build', 'icon.png');
+    return path.join(__dirname, '..', 'icons', 'icon.png');
   }
   return path.join(process.resourcesPath, 'icon.png');
 }

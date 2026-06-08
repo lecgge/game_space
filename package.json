@@ -24,7 +24,7 @@
     ],
     "extraResources": [
       {
-        "from": "build/icon.png",
+        "from": "icons/icon.png",
         "to": "icon.png"
       }
     ],
@@ -35,7 +35,7 @@
           "arch": ["x64"]
         }
       ],
-      "icon": "build/icon.png",
+      "icon": "icons/icon.png",
       "artifactName": "GameSpace-Setup-${version}.exe"
     },
     "nsis": {
