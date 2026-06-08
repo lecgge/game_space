@@ -12,6 +12,16 @@ if (!gotTheLock) {
   process.exit(0);
 }
 
+function getIconPath() {
+  // In development, icon is in project root/build/
+  // In production (packaged), icon is in resources/
+  const isDev = process.env.NODE_ENV === 'development';
+  if (isDev) {
+    return path.join(__dirname, '..', 'build', 'icon.png');
+  }
+  return path.join(process.resourcesPath, 'icon.png');
+}
+
 // ─── Window Creation ──────────────────────────────────────────
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -24,6 +34,7 @@ function createWindow() {
     transparent: false,
     titleBarStyle: 'hidden',
     show: false,
+    icon: getIconPath(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

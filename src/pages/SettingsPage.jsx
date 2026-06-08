@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useStore } from '@/store';
 import {
   GearSix, Palette, Info, FolderOpen, Plus, X,
-  Moon, Sun, Monitor, GameController,
+  Moon, Sun, Monitor,
 } from '@phosphor-icons/react';
 import { motion } from 'framer-motion';
 
@@ -109,9 +109,7 @@ function AboutTab() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
       <div className="ps5-card p-8 text-center">
-        <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-accent to-cta mx-auto mb-5 flex items-center justify-center shadow-xl shadow-accent-glow">
-          <GameController size={36} weight="fill" className="text-white" />
-        </div>
+        <img src="/favicon.png" alt="Game Space" className="mx-auto mb-5 shadow-xl shadow-accent-glow" style={{ width: '80px', height: '80px', borderRadius: '16px' }} />
         <h2 className="text-[24px] font-bold text-text-primary section-title">Game Space</h2>
         <p className="text-[13px] text-text-muted mt-1">版本 1.0.0</p>
         <p className="text-[13px] text-text-secondary mt-4 max-w-sm mx-auto leading-relaxed">

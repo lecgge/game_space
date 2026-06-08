@@ -13,6 +13,7 @@
   "build": {
     "appId": "com.gamespace.app",
     "productName": "Game Space",
+    "icon": "build/icon.png",
     "directories": {
       "output": "release"
     },
@@ -21,6 +22,12 @@
       "electron/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      }
+    ],
     "win": {
       "target": [
         {
@@ -28,14 +35,12 @@
           "arch": ["x64"]
         }
       ],
+      "icon": "build/icon.png",
       "artifactName": "GameSpace-Setup-${version}.exe"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "installerIcon": null,
-      "uninstallerIcon": null,
-      "installerHeaderIcon": null,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Game Space"
