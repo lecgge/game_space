@@ -223,7 +223,87 @@ function getSteamPath() {
   return null;
 }
 
-function scanPlatforms() {
+function getEpicPath() {
+  const isWin = process.platform === 'win32';
+  if (!isWin) return null;
+
+  // Epics manifests are always at ProgramData regardless of install location
+  const manifestPath = 'C:\\ProgramData\\Epic\\EpicGamesLauncher\\Data\\Manifests';
+  if (fs.existsSync(manifestPath)) return manifestPath;
+
+  // Try registry to confirm Epic is installed
+  try {
+    const { execSync } = require('child_process');
+    const regOutput = execSync(
+      'reg query "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Epic Games\\EpicGamesLauncher" /v AppDataPath 2>nul',
+      { encoding: 'utf-8' }
+    );
+    const match = regOutput.match(/AppDataPath\s+REG_SZ\s+(.+)/);
+    if (match && match[1]) {
+      const dataPath = path.join(match[1].trim(), 'Manifests');
+      if (fs.existsSync(dataPath)) return dataPath;
+    }
+  } catch (e) {
+    // registry query failed
+  }
+
+  return null;
+}
+
+function getXboxPaths() {
+  const isWin = process.platform === 'win32';
+  if (!isWin) return [];
+
+  const paths = [];
+
+  // Check if Xbox app is installed via AppX package
+  try {
+    const { execSync } = require('child_process');
+    const result = execSync(
+      'powershell -Command "Get-AppxPackage Microsoft.GamingApp | Select-Object -ExpandProperty InstallLocation" 2>nul',
+      { encoding: 'utf-8' }
+    ).trim();
+    if (result && fs.existsSync(result)) {
+      // Xbox app installed, now find game directories
+      // Default XboxGames folders on all drives
+      try {
+        const drivesOutput = execSync(
+          'wmic logicaldisk where drivetype=3 get deviceid 2>nul',
+          { encoding: 'utf-8' }
+        );
+        const drives = drivesOutput.match(/[A-Z]:/g) || [];
+        for (const drive of drives) {
+          const xboxDir = path.join(drive, 'XboxGames');
+          if (fs.existsSync(xboxDir)) {
+            paths.push(xboxDir);
+          }
+        }
+      } catch (e) {
+        // wmic failed, try common drives
+        for (const drive of ['C:', 'D:', 'E:', 'F:']) {
+          const xboxDir = path.join(drive, 'XboxGames');
+          if (fs.existsSync(xboxDir)) {
+            paths.push(xboxDir);
+          }
+        }
+      }
+    }
+  } catch (e) {
+    // PowerShell or AppX check failed
+  }
+
+  // Fallback: check common XboxGames directories
+  if (paths.length === 0) {
+    for (const drive of ['C:', 'D:', 'E:', 'F:']) {
+      const xboxDir = path.join(drive, 'XboxGames');
+      if (fs.existsSync(xboxDir)) {
+        paths.push(xboxDir);
+      }
+    }
+  }
+
+  return paths;
+}
   const platforms = [];
   const isWin = process.platform === 'win32';
 
@@ -234,21 +314,15 @@ function scanPlatforms() {
   }
 
   // Epic Games detection
-  const epicPaths = isWin
-    ? ['C:\\ProgramData\\Epic\\EpicGamesLauncher\\Data\\Manifests']
-    : [];
-
-  for (const ep of epicPaths) {
-    if (fs.existsSync(ep)) {
-      platforms.push({ id: 'epic', name: 'Epic Games', path: ep, installed: true });
-      break;
-    }
+  const epicPath = getEpicPath();
+  if (epicPath) {
+    platforms.push({ id: 'epic', name: 'Epic Games', path: epicPath, installed: true });
   }
 
   // Xbox / Microsoft Store detection
-  const xboxPath = isWin ? 'C:\\XboxGames' : null;
-  if (xboxPath && fs.existsSync(xboxPath)) {
-    platforms.push({ id: 'xbox', name: 'Xbox', path: xboxPath, installed: true });
+  const xboxPaths = getXboxPaths();
+  if (xboxPaths.length > 0) {
+    platforms.push({ id: 'xbox', name: 'Xbox', path: xboxPaths[0], installed: true });
   }
 
   // Add undetected platforms as not-installed
@@ -320,54 +394,137 @@ function scanPlatformGames(platform) {
     }
   }
 
+  if (platform === 'epic') {
+    try {
+      const epicPath = getEpicPath();
+      if (!epicPath) return games;
+
+      const files = fs.readdirSync(epicPath);
+      for (const file of files) {
+        if (file.endsWith('.item')) {
+          try {
+            const manifest = fs.readFileSync(path.join(epicPath, file), 'utf-8');
+            const json = JSON.parse(manifest);
+            const name = json.DisplayName || json.AppName;
+            const installPath = json.InstallLocation;
+            if (name) {
+              games.push({
+                title: name,
+                platform: 'epic',
+                app_id: json.CatalogItemId || json.AppName,
+                install_path: installPath || null,
+              });
+            }
+          } catch (e) {
+            // skip malformed manifests
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Epic scan error:', e);
+    }
+  }
+
+  if (platform === 'xbox') {
+    try {
+      const xboxPaths = getXboxPaths();
+      for (const xboxPath of xboxPaths) {
+        if (!fs.existsSync(xboxPath)) continue;
+        const entries = fs.readdirSync(xboxPath, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory()) {
+            const gamePath = path.join(xboxPath, entry.name);
+            // Look for the game executable in the Xbox game folder
+            try {
+              const gameEntries = fs.readdirSync(gamePath, { withFileTypes: true });
+              // Xbox games are typically organized in subfolders with Content/ etc.
+              // Try to find .exe files recursively
+              const exe = findExeInDir(gamePath, 3);
+              games.push({
+                title: entry.name.replace(/[_-]/g, ' '),
+                platform: 'xbox',
+                install_path: gamePath,
+                exe_path: exe || null,
+              });
+            } catch (e) {
+              // skip inaccessible directories
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Xbox scan error:', e);
+    }
+  }
+
   return games;
 }
 
-function scanDirectory(dirPath) {
-  const games = [];
+function findExeInDir(dirPath, maxDepth) {
+  if (maxDepth < 0) return null;
   try {
-    if (!fs.existsSync(dirPath)) return games;
-
     const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-    const exeFiles = [];
-
-    // Look for .exe files (Windows) or common game indicators
     for (const entry of entries) {
+      const fullPath = path.join(dirPath, entry.name);
       if (entry.isFile() && entry.name.endsWith('.exe')) {
-        exeFiles.push({
-          title: entry.name.replace('.exe', '').replace(/[_-]/g, ' '),
-          exe_path: path.join(dirPath, entry.name),
-          install_path: dirPath,
+        return fullPath;
+      }
+      if (entry.isDirectory()) {
+        const found = findExeInDir(fullPath, maxDepth - 1);
+        if (found) return found;
+      }
+    }
+  } catch (e) {
+    // skip inaccessible
+  }
+  return null;
+}
+
+function scanDirectory(dirPath, maxDepth = 5) {
+  const games = [];
+
+  function scan(currentPath, depth) {
+    if (depth > maxDepth) return;
+    try {
+      if (!fs.existsSync(currentPath)) return;
+
+      const entries = fs.readdirSync(currentPath, { withFileTypes: true });
+      const exeFiles = [];
+      const subDirs = [];
+
+      for (const entry of entries) {
+        if (entry.isFile() && entry.name.endsWith('.exe')) {
+          exeFiles.push(entry);
+        }
+        if (entry.isDirectory()) {
+          subDirs.push(entry);
+        }
+      }
+
+      // If this directory has .exe files, treat it as a game
+      if (exeFiles.length > 0) {
+        // Prefer a .exe that looks like a game launcher (not uninstaller/installer)
+        const gameExe = exeFiles.find((e) =>
+          !/unins|setup|install|update|redist|dotnet|vc_redist|dxsetup/i.test(e.name)
+        ) || exeFiles[0];
+
+        games.push({
+          title: path.basename(currentPath).replace(/[_-]/g, ' '),
+          exe_path: path.join(currentPath, gameExe.name),
+          install_path: currentPath,
           platform: 'manual',
         });
       }
-      // Check subdirectories one level deep
-      if (entry.isDirectory()) {
-        const subPath = path.join(dirPath, entry.name);
-        try {
-          const subEntries = fs.readdirSync(subPath);
-          const subExes = subEntries.filter((f) => f.endsWith('.exe'));
-          if (subExes.length > 0) {
-            games.push({
-              title: entry.name.replace(/[_-]/g, ' '),
-              exe_path: path.join(subPath, subExes[0]),
-              install_path: subPath,
-              platform: 'manual',
-            });
-          }
-        } catch (e) {
-          // skip inaccessible directories
-        }
-      }
-    }
 
-    // Add top-level exes if no subdirectory games found
-    if (games.length === 0) {
-      games.push(...exeFiles);
+      // Recurse into subdirectories
+      for (const subDir of subDirs) {
+        scan(path.join(currentPath, subDir.name), depth + 1);
+      }
+    } catch (e) {
+      // skip inaccessible directories
     }
-  } catch (e) {
-    console.error('Directory scan error:', e);
   }
 
+  scan(dirPath, 0);
   return games;
 }
