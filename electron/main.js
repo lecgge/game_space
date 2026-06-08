@@ -304,6 +304,118 @@ function getXboxPaths() {
 
   return paths;
 }
+
+function getInstalledGamesFromRegistry() {
+  const games = [];
+  const isWin = process.platform === 'win32';
+  if (!isWin) return games;
+
+  const { execSync } = require('child_process');
+
+  // Game publisher / name filter keywords
+  const gamePublishers = [
+    'miHoYo', 'mihoyo', '米哈游', 'Hoyoverse', 'cognosphere',
+    'Netease', '网易', 'Tencent', '腾讯',
+    'Electronic Arts', 'Ubisoft', 'Activision', 'Blizzard',
+    'Square Enix', 'Capcom', 'Bandai Namco', 'Sega', 'Bethesda',
+    'Microsoft Studios', 'Xbox Game Studios', 'Rockstar Games', 'Valve',
+    'CD Projekt', 'Warner Bros', '2K', 'Focus Entertainment',
+    'Paradox Interactive', 'Frontier Developments', 'Klei', 'Devolver',
+    'Annapurna Interactive', 'Team17', 'Curve Digital', 'THQ Nordic',
+    'GOG', 'Riot Games',
+  ];
+  const gameKeywords = [
+    'game', 'Game', 'GAME',
+    '原神', '崩坏', '星穹铁道', '崩铁',
+    '燕云十六声', '永劫无间', '逆水寒',
+    'Cyberpunk', 'Witcher', 'Elder Scrolls', 'Fallout',
+    'Call of Duty', 'Battlefield', 'Assassin\'s Creed', 'Far Cry',
+    'Final Fantasy', 'Resident Evil', 'Monster Hunter', 'Dark Souls',
+    'Forza', 'Halo', 'Gears of War', 'Age of Empires',
+    'Civilization', 'Cities: Skylines', 'The Sims', 'Stardew Valley',
+    'Minecraft', 'Terraria', 'Factorio', 'RimWorld',
+    'Dota', 'League of Legends', 'Valorant', 'Overwatch',
+    'Apex Legends', 'Fortnite', 'PUBG', 'Counter-Strike',
+  ];
+
+  // Build PowerShell command to query all three registry paths
+  const regPaths = [
+    'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+    'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+    'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+  ];
+
+  try {
+    const psCmd =
+      regPaths.map(rp => `Get-ChildItem '${rp}' -ErrorAction SilentlyContinue`).join(',') +
+      ` | ForEach-Object { Get-ItemProperty $_.PsPath }` +
+      ` | Where-Object { $_.DisplayName -and $_.InstallLocation }` +
+      ` | Select-Object DisplayName, InstallLocation, Publisher, DisplayIcon` +
+      ` | ConvertTo-Json -Compress`;
+
+    const result = execSync(
+      `powershell -NoProfile -Command "${psCmd.replace(/"/g, '\\"')}"`,
+      { encoding: 'utf-8', timeout: 15000, maxBuffer: 5 * 1024 * 1024 }
+    );
+
+    if (!result || result.trim() === '') return [];
+
+    let items;
+    try {
+      items = JSON.parse(result);
+      if (!Array.isArray(items)) items = items ? [items] : [];
+    } catch (e) {
+      return [];
+    }
+
+    for (const item of items) {
+      const name = (item.DisplayName || '').trim();
+      const publisher = (item.Publisher || '').trim();
+      let installPath = (item.InstallLocation || '').trim().replace(/^"|"$/g, '');
+      const displayIcon = (item.DisplayIcon || '').trim();
+
+      if (!name || !installPath) continue;
+      if (!fs.existsSync(installPath)) continue;
+
+      // Skip system components, runtimes, tools
+      if (/update|redist|runtime|vc_|dotnet|framework|directx|driver|sdk/i.test(name)) continue;
+      if (/microsoft\\windows|adobe|java|oracle|intel|amd|nvidia/i.test(publisher)) continue;
+
+      // Match by publisher or game name keyword
+      const isGame =
+        gamePublishers.some(p => publisher.toLowerCase().includes(p.toLowerCase())) ||
+        gameKeywords.some(k => name.toLowerCase().includes(k.toLowerCase()));
+
+      if (isGame) {
+        let exePath = null;
+        // Try DisplayIcon first
+        if (displayIcon && !/unins/i.test(displayIcon)) {
+          const iconPath = displayIcon.split(',')[0].replace(/^"|"$/g, '');
+          if (fs.existsSync(iconPath) && iconPath.endsWith('.exe')) {
+            exePath = iconPath;
+          }
+        }
+        // Fallback: search install dir recursively
+        if (!exePath) {
+          exePath = findExeInDir(installPath, 3);
+        }
+
+        games.push({
+          title: name,
+          platform: 'standalone',
+          install_path: installPath,
+          exe_path: exePath,
+        });
+      }
+    }
+  } catch (e) {
+    console.error('Registry scan error:', e.message);
+  }
+
+  return games;
+}
+
+function scanPlatforms() {
   const platforms = [];
   const isWin = process.platform === 'win32';
 
@@ -325,11 +437,18 @@ function getXboxPaths() {
     platforms.push({ id: 'xbox', name: 'Xbox', path: xboxPaths[0], installed: true });
   }
 
+  // Independent / standalone games (registry-based)
+  const standaloneGames = getInstalledGamesFromRegistry();
+  if (standaloneGames.length > 0) {
+    platforms.push({ id: 'standalone', name: '独立游戏', path: 'registry', installed: true, count: standaloneGames.length });
+  }
+
   // Add undetected platforms as not-installed
   const allPlatforms = [
     { id: 'steam', name: 'Steam' },
     { id: 'epic', name: 'Epic Games' },
     { id: 'xbox', name: 'Xbox' },
+    { id: 'standalone', name: '独立游戏' },
   ];
   for (const ap of allPlatforms) {
     if (!platforms.find((p) => p.id === ap.id)) {
@@ -454,6 +573,15 @@ function scanPlatformGames(platform) {
       }
     } catch (e) {
       console.error('Xbox scan error:', e);
+    }
+  }
+
+  if (platform === 'standalone') {
+    try {
+      const standaloneGames = getInstalledGamesFromRegistry();
+      games.push(...standaloneGames);
+    } catch (e) {
+      console.error('Standalone game scan error:', e);
     }
   }
 

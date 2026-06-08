@@ -8,10 +8,10 @@ import { motion, AnimatePresence } from 'framer-motion';
 
 const fade = { hidden: { opacity: 0, y: 12 }, show: (i) => ({ opacity: 1, y: 0, transition: { delay: i * 0.06, duration: 0.35 } }) };
 
-const PLATFORM_ICONS = { steam: 'S', epic: 'E', xbox: 'X' };
+const PLATFORM_ICONS = { steam: 'S', epic: 'E', xbox: 'X', standalone: '独' };
 
 function PlatformCard({ platform, onScan, isScanning }) {
-  const iconColors = { steam: 'from-blue-500 to-blue-700', epic: 'from-gray-500 to-gray-700', xbox: 'from-green-500 to-green-700' };
+  const iconColors = { steam: 'from-blue-500 to-blue-700', epic: 'from-gray-500 to-gray-700', xbox: 'from-green-500 to-green-700', standalone: 'from-amber-500 to-orange-700' };
   const gradient = iconColors[platform.id] || 'from-accent to-purple-700';
   return (
     <motion.div variants={fade} className="ps5-card p-5">
@@ -121,7 +121,7 @@ export default function ImportPage() {
       {/* Platform scanning */}
       <motion.div variants={fade} style={{ marginBottom: '40px' }}>
         <h2 className="section-title text-[16px] text-text-primary" style={{ marginBottom: '16px' }}>平台扫描</h2>
-        <div className="grid grid-cols-3" style={{ gap: '20px' }}>
+        <div className="grid grid-cols-4" style={{ gap: '20px' }}>
           {platforms.map((p) => <PlatformCard key={p.id} platform={p} onScan={handleScan} isScanning={scanningPlatform === p.id} />)}
         </div>
       </motion.div>
