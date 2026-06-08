@@ -58,6 +58,7 @@ function GameCard({ game, onSelect, isSelected }) {
 
 function DetailPanel({ game, onClose }) {
   const { deleteGame } = useStore();
+  const [launchError, setLaunchError] = useState(null);
   if (!game) return null;
 
   return (
@@ -87,7 +88,11 @@ function DetailPanel({ game, onClose }) {
 
         <div className="flex gap-2">
           {game.status === 'installed' ? (
-            <button onClick={() => window.electronAPI?.openPath(game.exe_path)} className="btn btn-cta flex-1">
+            <button onClick={async () => {
+              setLaunchError(null);
+              const err = await window.electronAPI?.openPath(game.exe_path);
+              if (err) setLaunchError(err || '启动失败，请检查游戏路径是否正确');
+            }} className="btn btn-cta flex-1">
               <Play size={14} weight="fill" /> 启动游戏
             </button>
           ) : (
@@ -98,6 +103,9 @@ function DetailPanel({ game, onClose }) {
             <FolderOpen size={16} />
           </button>
         </div>
+        {launchError && (
+          <p className="text-[12px] text-error mt-2">{launchError}</p>
+        )}
 
         <div className="space-y-3">
           {[

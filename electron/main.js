@@ -181,8 +181,8 @@ ipcMain.handle('dialog:open-directory', async () => {
   return result.filePaths[0];
 });
 
-ipcMain.handle('shell:open-path', (_, p) => {
-  shell.openPath(p);
+ipcMain.handle('shell:open-path', async (_, p) => {
+  return await shell.openPath(p);
 });
 
 ipcMain.handle('shell:show-item', (_, p) => {
@@ -192,20 +192,45 @@ ipcMain.handle('shell:show-item', (_, p) => {
 // ─── Platform Scanner ────────────────────────────────────────
 const fs = require('fs');
 
+function getSteamPath() {
+  const isWin = process.platform === 'win32';
+  if (!isWin) {
+    const homePath = path.join(require('os').homedir(), '.steam/steam');
+    return fs.existsSync(homePath) ? homePath : null;
+  }
+
+  // Try registry first (supports custom install paths)
+  try {
+    const { execSync } = require('child_process');
+    const regOutput = execSync(
+      'reg query "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Valve\\Steam" /v InstallPath 2>nul',
+      { encoding: 'utf-8' }
+    );
+    const match = regOutput.match(/InstallPath\s+REG_SZ\s+(.+)/);
+    if (match && match[1]) {
+      const regPath = match[1].trim();
+      if (fs.existsSync(regPath)) return regPath;
+    }
+  } catch (e) {
+    // registry query failed, fall through to hardcoded paths
+  }
+
+  // Fallback to common paths
+  const fallbackPaths = ['C:\\Program Files (x86)\\Steam', 'C:\\Program Files\\Steam'];
+  for (const sp of fallbackPaths) {
+    if (fs.existsSync(sp)) return sp;
+  }
+  return null;
+}
+
 function scanPlatforms() {
   const platforms = [];
   const isWin = process.platform === 'win32';
 
   // Steam detection
-  const steamPaths = isWin
-    ? ['C:\\Program Files (x86)\\Steam', 'C:\\Program Files\\Steam']
-    : [path.join(require('os').homedir(), '.steam/steam')];
-
-  for (const sp of steamPaths) {
-    if (fs.existsSync(sp)) {
-      platforms.push({ id: 'steam', name: 'Steam', path: sp, installed: true });
-      break;
-    }
+  const steamPath = getSteamPath();
+  if (steamPath) {
+    platforms.push({ id: 'steam', name: 'Steam', path: steamPath, installed: true });
   }
 
   // Epic Games detection
@@ -246,15 +271,7 @@ function scanPlatformGames(platform) {
 
   if (platform === 'steam') {
     try {
-      const isWin = process.platform === 'win32';
-      const steamPaths = isWin
-        ? ['C:\\Program Files (x86)\\Steam', 'C:\\Program Files\\Steam']
-        : [path.join(require('os').homedir(), '.steam/steam')];
-
-      let steamPath = null;
-      for (const sp of steamPaths) {
-        if (fs.existsSync(sp)) { steamPath = sp; break; }
-      }
+      const steamPath = getSteamPath();
       if (!steamPath) return games;
 
       // Try to read libraryfolders.vdf for game locations
@@ -320,6 +337,7 @@ function scanDirectory(dirPath) {
         exeFiles.push({
           title: entry.name.replace('.exe', '').replace(/[_-]/g, ' '),
           exe_path: path.join(dirPath, entry.name),
+          install_path: dirPath,
           platform: 'manual',
         });
       }
