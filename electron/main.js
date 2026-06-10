@@ -189,6 +189,193 @@ ipcMain.handle('shell:show-item', (_, p) => {
   shell.showItemInFolder(p);
 });
 
+// ─── Game Cover Image ────────────────────────────────────────
+// Cover image search: Steam library cache → install directory → fallback
+
+// In-memory cache for cover data URLs (keyed by game id)
+const coverCache = {};
+
+// Image file extensions to look for
+const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp']);
+
+// Common cover image filenames (case-insensitive)
+const COVER_FILENAMES = [
+  'cover', 'boxart', 'box_art', 'box-art',
+  'thumbnail', 'thumb', 'poster', 'banner',
+  'library_600x900', 'library_hero', 'header',
+  'icon', 'logo', 'artwork', 'art',
+  'cover_art', 'coverart', 'folder',
+];
+
+const MAX_COVER_SIZE = 2 * 1024 * 1024; // 2 MB max
+
+function getMimeType(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const mimeMap = {
+    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+    '.png': 'image/png', '.webp': 'image/webp',
+    '.bmp': 'image/bmp',
+  };
+  return mimeMap[ext] || 'image/jpeg';
+}
+
+/**
+ * Search Steam's library cache for a game's cover image.
+ * Steam stores images as: {appid}_{hash}_{type}.{ext}
+ * We look for: header (460x215), library_600x900 (portrait), library_hero (wide)
+ */
+function findSteamCover(appId) {
+  const steamPath = getSteamPath();
+  if (!steamPath) return null;
+
+  const cacheDir = path.join(steamPath, 'appcache', 'librarycache');
+  if (!fs.existsSync(cacheDir)) return null;
+
+  try {
+    const files = fs.readdirSync(cacheDir);
+    // Priority order: library_600x900 (portrait cover) > header (landscape) > library_hero
+    const priorities = ['library_600x900', 'header', 'library_hero', 'logo'];
+    for (const prio of priorities) {
+      const match = files.find(
+        (f) =>
+          f.startsWith(`${appId}_`) &&
+          f.includes(`_${prio}`) &&
+          IMAGE_EXTENSIONS.has(path.extname(f).toLowerCase())
+      );
+      if (match) {
+        const fullPath = path.join(cacheDir, match);
+        try {
+          const stats = fs.statSync(fullPath);
+          if (stats.size <= MAX_COVER_SIZE) return fullPath;
+        } catch (e) { /* skip */ }
+      }
+    }
+    // Fallback: any image matching the appid
+    const anyMatch = files.find(
+      (f) =>
+        f.startsWith(`${appId}_`) &&
+        IMAGE_EXTENSIONS.has(path.extname(f).toLowerCase())
+    );
+    if (anyMatch) {
+      const fullPath = path.join(cacheDir, anyMatch);
+      try {
+        const stats = fs.statSync(fullPath);
+        if (stats.size <= MAX_COVER_SIZE) return fullPath;
+      } catch (e) { /* skip */ }
+    }
+  } catch (e) { /* skip */ }
+
+  return null;
+}
+
+/**
+ * Search a game's install directory for cover-like image files.
+ * Checks common filenames first, then falls back to any reasonably-sized image.
+ */
+function findCoverInDirectory(installPath) {
+  if (!installPath || !fs.existsSync(installPath)) return null;
+
+  try {
+    const entries = fs.readdirSync(installPath, { withFileTypes: true });
+
+    // Pass 1: Match common cover filenames
+    for (const target of COVER_FILENAMES) {
+      const match = entries.find((e) => {
+        if (!e.isFile()) return false;
+        const name = path.basename(e.name, path.extname(e.name)).toLowerCase();
+        const ext = path.extname(e.name).toLowerCase();
+        return name === target && IMAGE_EXTENSIONS.has(ext);
+      });
+      if (match) {
+        const fullPath = path.join(installPath, match.name);
+        try {
+          const stats = fs.statSync(fullPath);
+          if (stats.size <= MAX_COVER_SIZE) return fullPath;
+        } catch (e) { /* skip */ }
+      }
+    }
+
+    // Pass 2: Any image file at root level that looks reasonable
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const ext = path.extname(entry.name).toLowerCase();
+      if (!IMAGE_EXTENSIONS.has(ext)) continue;
+      if (EXE_EXCLUDE_PATTERNS.some((p) => p.test(entry.name))) continue;
+      try {
+        const stats = fs.statSync(path.join(installPath, entry.name));
+        if (stats.size > 10 * 1024 && stats.size <= MAX_COVER_SIZE) {
+          return path.join(installPath, entry.name);
+        }
+      } catch (e) { /* skip */ }
+    }
+
+    // Pass 3: Check common subdirectories (e.g. "art", "media", "images")
+    const artDirs = ['art', 'media', 'images', 'assets', 'textures'];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (!artDirs.includes(entry.name.toLowerCase())) continue;
+      const subDirPath = path.join(installPath, entry.name);
+      try {
+        const subEntries = fs.readdirSync(subDirPath, { withFileTypes: true });
+        for (const sub of subEntries) {
+          if (!sub.isFile()) continue;
+          const ext = path.extname(sub.name).toLowerCase();
+          if (!IMAGE_EXTENSIONS.has(ext)) continue;
+          try {
+            const stats = fs.statSync(path.join(subDirPath, sub.name));
+            if (stats.size > 10 * 1024 && stats.size <= MAX_COVER_SIZE) {
+              return path.join(subDirPath, sub.name);
+            }
+          } catch (e) { /* skip */ }
+        }
+      } catch (e) { /* skip */ }
+    }
+  } catch (e) { /* skip */ }
+
+  return null;
+}
+
+/**
+ * Read an image file and return a base64 data URL.
+ */
+function imageToDataUrl(filePath) {
+  try {
+    const buffer = fs.readFileSync(filePath);
+    const mime = getMimeType(filePath);
+    const base64 = buffer.toString('base64');
+    return `data:${mime};base64,${base64}`;
+  } catch (e) {
+    return null;
+  }
+}
+
+ipcMain.handle('games:cover', (_, game) => {
+  // Check cache first
+  if (game.id && coverCache[game.id]) {
+    return coverCache[game.id];
+  }
+
+  let coverPath = null;
+
+  // Strategy 1: Steam library cache (by app_id)
+  if (game.platform === 'steam' && game.app_id) {
+    coverPath = findSteamCover(game.app_id);
+  }
+
+  // Strategy 2: Search install directory
+  if (!coverPath) {
+    coverPath = findCoverInDirectory(game.install_path);
+  }
+
+  if (!coverPath) return null;
+
+  const dataUrl = imageToDataUrl(coverPath);
+  if (dataUrl && game.id) {
+    coverCache[game.id] = dataUrl;
+  }
+  return dataUrl;
+});
+
 // ─── Platform Scanner ────────────────────────────────────────
 const fs = require('fs');
 

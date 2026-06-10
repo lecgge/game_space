@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useStore } from '@/store';
 import {
   MagnifyingGlass, GameController, Play, Clock, HardDrive,
@@ -26,15 +26,42 @@ const fmtS = (mb) => !mb ? '—' : mb < 1024 ? `${mb} MB` : `${(mb/1024).toFixed
 const gridItem = { hidden: { opacity: 0, scale: 0.92 }, show: { opacity: 1, scale: 1, transition: { duration: 0.3 } } };
 
 function GameCard({ game, onSelect, isSelected }) {
+  const [cover, setCover] = useState(game.cover_image || null);
+  const [loading, setLoading] = useState(false);
+  const imgRef = useRef(null);
+
+  useEffect(() => {
+    if (game.cover_image) { setCover(game.cover_image); return; }
+    if (cover) return; // already loaded
+    let cancelled = false;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting && !cancelled && !cover) {
+          setLoading(true);
+          window.electronAPI?.getGameCover(game).then((dataUrl) => {
+            if (!cancelled) {
+              setCover(dataUrl || null);
+              setLoading(false);
+            }
+          });
+          observer.disconnect();
+        }
+      },
+      { rootMargin: '100px' }
+    );
+    if (imgRef.current) observer.observe(imgRef.current);
+    return () => { cancelled = true; observer.disconnect(); };
+  }, [game.id, game.cover_image]);
+
   return (
     <motion.div variants={gridItem} layout onClick={() => onSelect(game)}
       className={`ps5-card ${isSelected ? 'ring-2 ring-accent shadow-lg shadow-accent-glow' : ''}`}>
-      <div className="aspect-[16/10] relative overflow-hidden bg-bg-surface">
-        {game.cover_image ? (
-          <img src={game.cover_image} alt={game.title} className="w-full h-full object-cover transition-transform duration-500 hover:scale-110" />
+      <div className="aspect-[16/10] relative overflow-hidden bg-bg-surface" ref={imgRef}>
+        {cover ? (
+          <img src={cover} alt={game.title} className="w-full h-full object-cover transition-transform duration-500 hover:scale-110" />
         ) : (
           <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-bg-card to-bg-surface">
-            <GameController size={36} weight="light" className="text-accent/25" />
+            <GameController size={36} weight="light" className={`text-accent/25 ${loading ? 'animate-pulse' : ''}`} />
           </div>
         )}
         <span className={`absolute top-2.5 right-2.5 px-2 py-0.5 rounded-full text-[10px] font-semibold backdrop-blur-md ${
@@ -59,6 +86,17 @@ function GameCard({ game, onSelect, isSelected }) {
 function DetailPanel({ game, onClose }) {
   const { deleteGame } = useStore();
   const [launchError, setLaunchError] = useState(null);
+  const [cover, setCover] = useState(game.cover_image || null);
+
+  useEffect(() => {
+    setCover(game.cover_image || null);
+    if (!game.cover_image) {
+      window.electronAPI?.getGameCover(game).then((dataUrl) => {
+        setCover(dataUrl || null);
+      });
+    }
+  }, [game.id, game.cover_image]);
+
   if (!game) return null;
 
   return (
@@ -66,8 +104,8 @@ function DetailPanel({ game, onClose }) {
       transition={{ type: 'spring', stiffness: 300, damping: 30 }}
       className="w-[340px] shrink-0 glass-heavy border-l border-border overflow-y-auto">
       <div className="aspect-[16/9] relative bg-bg-surface">
-        {game.cover_image ? (
-          <img src={game.cover_image} alt={game.title} className="w-full h-full object-cover" />
+        {cover ? (
+          <img src={cover} alt={game.title} className="w-full h-full object-cover" />
         ) : (
           <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-bg-card to-bg-surface">
             <GameController size={48} weight="light" className="text-accent/20" />

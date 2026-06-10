@@ -21,7 +21,7 @@ export default function TitleBar() {
     <div className="titlebar-drag h-[var(--spacing-titlebar)] flex items-center justify-between select-none bg-bg-deep/80 backdrop-blur-sm z-50">
       {/* Left: Logo */}
       <div className="titlebar-no-drag flex items-center gap-2.5 px-4">
-        <img src="/favicon.png" alt="Game Space" className="w-5 h-5 rounded shadow-lg" />
+        <img src="./favicon.png" alt="Game Space" className="w-5 h-5 rounded shadow-lg" />
         <span className="text-[11px] text-text-muted font-medium tracking-wide uppercase" style={{ fontFamily: 'var(--font-display)' }}>
           Game Space
         </span>

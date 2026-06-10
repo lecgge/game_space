@@ -22,7 +22,7 @@ export default function Sidebar() {
     <aside className="shrink-0 flex flex-col h-full glass-heavy border-r border-border z-10" style={{ width: '200px' }}>
       {/* Logo Area */}
       <div style={{ padding: '24px 20px 20px 20px' }}>
-        <img src="/favicon.png" alt="Game Space" className="shadow-lg shadow-accent-glow" style={{ width: '36px', height: '36px', borderRadius: '8px' }} />
+        <img src="./favicon.png" alt="Game Space" className="shadow-lg shadow-accent-glow" style={{ width: '36px', height: '36px', borderRadius: '8px' }} />
         <p className="text-text-primary leading-none" style={{ fontFamily: 'var(--font-display)', fontSize: '16px', fontWeight: '700', marginTop: '12px' }}>
           GAME SPACE
         </p>

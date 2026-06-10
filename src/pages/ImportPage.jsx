@@ -114,7 +114,7 @@ export default function ImportPage() {
   const handleImport = async (game) => {
     setImportingId(game.title);
     try {
-      await saveGame({ title: game.title, platform: game.platform, install_path: game.install_path || null, exe_path: game.exe_path || null, status: game.status || (game.install_path ? 'installed' : 'missing'), genres: [], playtime: 0, size: 0 });
+      await saveGame({ title: game.title, platform: game.platform, app_id: game.app_id || null, install_path: game.install_path || null, exe_path: game.exe_path || null, status: game.status || (game.install_path ? 'installed' : 'missing'), genres: [], playtime: 0, size: 0 });
       setImportedIds((prev) => new Set([...prev, game.title]));
     } catch (e) { console.error(e); }
     finally { setImportingId(null); }

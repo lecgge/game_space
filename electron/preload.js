@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteGame: (id) => ipcRenderer.invoke('games:delete', id),
   getStats: () => ipcRenderer.invoke('games:stats'),
   getRecentGames: (limit) => ipcRenderer.invoke('games:recent', limit),
+  getGameCover: (game) => ipcRenderer.invoke('games:cover', game),
 
   // ─── Scanning ──────────────────────────────────────────────
   scanPlatforms: () => ipcRenderer.invoke('scan:platforms'),
