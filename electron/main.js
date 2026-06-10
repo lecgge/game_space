@@ -157,6 +157,49 @@ ipcMain.handle('scan:directory', (_, dirPath) => {
   return scanDirectory(dirPath);
 });
 
+// ─── IPC: Auto-Import ────────────────────────────────────────
+ipcMain.handle('games:auto-import', async () => {
+  // Scan all detected platforms and auto-import games not yet in the library
+  const platforms = scanPlatforms();
+  const existingGames = db.getAllGames().games;
+  const existingKeys = new Set(
+    existingGames.map((g) => `${g.title}|${g.platform}`)
+  );
+
+  let imported = 0;
+  const platformIds = ['steam', 'epic', 'xbox', 'standalone'];
+
+  for (const pId of platformIds) {
+    const platformInfo = platforms.find((p) => p.id === pId && p.installed);
+    if (!platformInfo) continue;
+
+    try {
+      const scanned = scanPlatformGames(pId);
+      for (const game of scanned) {
+        const key = `${game.title}|${game.platform}`;
+        if (existingKeys.has(key)) continue;
+        db.saveGame({
+          title: game.title,
+          platform: game.platform,
+          app_id: game.app_id || null,
+          install_path: game.install_path || null,
+          exe_path: game.exe_path || null,
+          status: game.status || (game.install_path ? 'installed' : 'missing'),
+          genres: [],
+          playtime: 0,
+          size: 0,
+        });
+        existingKeys.add(key);
+        imported++;
+      }
+    } catch (e) {
+      console.error(`Auto-import ${pId} error:`, e.message);
+    }
+  }
+
+  return { imported };
+});
+
 // ─── IPC: Settings ───────────────────────────────────────────
 ipcMain.handle('settings:get', (_, key) => {
   return db.getSetting(key);

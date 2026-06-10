@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   scanPlatforms: () => ipcRenderer.invoke('scan:platforms'),
   scanPlatformGames: (platform) => ipcRenderer.invoke('scan:platform-games', platform),
   scanDirectory: (dirPath) => ipcRenderer.invoke('scan:directory', dirPath),
+  autoImportGames: () => ipcRenderer.invoke('games:auto-import'),
 
   // ─── Settings ──────────────────────────────────────────────
   getSetting: (key) => ipcRenderer.invoke('settings:get', key),

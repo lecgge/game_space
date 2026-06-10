@@ -55,7 +55,7 @@ export const useStore = create((set, get) => ({
     if (!electronAPI) return null;
     try {
       const saved = await electronAPI.saveGame(game);
-      await get().fetchGames();
+      await Promise.all([get().fetchGames(), get().fetchStats()]);
       return saved;
     } catch (e) {
       console.error('saveGame error:', e);
@@ -68,11 +68,27 @@ export const useStore = create((set, get) => ({
     if (!electronAPI) return false;
     try {
       await electronAPI.deleteGame(id);
-      await get().fetchGames();
+      await Promise.all([get().fetchGames(), get().fetchStats()]);
       return true;
     } catch (e) {
       console.error('deleteGame error:', e);
       return false;
+    }
+  },
+
+  // ─── Auto-Import ──────────────────────────────────────────
+  autoImportGames: async () => {
+    const electronAPI = api();
+    if (!electronAPI) return { imported: 0 };
+    try {
+      const result = await electronAPI.autoImportGames();
+      if (result.imported > 0) {
+        await Promise.all([get().fetchGames(), get().fetchStats()]);
+      }
+      return result;
+    } catch (e) {
+      console.error('autoImportGames error:', e);
+      return { imported: 0 };
     }
   },
 
@@ -141,6 +157,16 @@ export const useStore = create((set, get) => ({
       console.log('[GameSpace] Initializing...');
       const platform = await electronAPI.getPlatform();
       set({ platform });
+
+      // Auto-import games from detected platforms first
+      try {
+        const importResult = await get().autoImportGames();
+        if (importResult.imported > 0) {
+          console.log(`[GameSpace] Auto-imported ${importResult.imported} games`);
+        }
+      } catch (e) {
+        console.warn('[GameSpace] Auto-import skipped:', e.message);
+      }
 
       await Promise.all([
         get().fetchGames(),

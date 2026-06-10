@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { useStore } from '@/store';
 import {
   GameController, Clock, HardDrive, Lightning,
@@ -15,8 +15,14 @@ const fmt = {
 const fade = { hidden: { opacity: 0, y: 16 }, show: (i) => ({ opacity: 1, y: 0, transition: { delay: i * 0.07, duration: 0.4, ease: [0.22,1,0.36,1] } }) };
 
 export default function HomePage() {
-  const { stats, games } = useStore();
+  const { stats, games, fetchStats, fetchRecentGames } = useStore();
   const navigate = useNavigate();
+
+  // Re-fetch stats and recent games when page becomes visible
+  useEffect(() => {
+    fetchStats();
+    fetchRecentGames();
+  }, [fetchStats, fetchRecentGames]);
 
   const statsData = [
     { label: '游戏总数', value: stats.totalGames || 0, icon: GameController, gradient: 'from-violet-500 to-purple-600' },
