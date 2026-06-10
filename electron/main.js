@@ -462,48 +462,114 @@ function scanPlatforms() {
 function scanPlatformGames(platform) {
   const games = [];
 
+  // ── Steam ───────────────────────────────────────────────
   if (platform === 'steam') {
     try {
       const steamPath = getSteamPath();
       if (!steamPath) return games;
 
-      // Try to read libraryfolders.vdf for game locations
+      // Known non-game Steam AppIDs (tools, runtimes, compatibility layers)
+      const nonGameAppIds = new Set([
+        '228980',  // Steamworks Common Redistributables
+        '1070560', // Steam Linux Runtime - soldier
+        '1391110', // Steam Linux Runtime - sniper
+        '1628350', // Steam Linux Runtime - scout
+        '1826330', // Proton EasyAntiCheat Runtime
+        '1161040', // Proton BattlEye Runtime
+        '223026',  // Steamworks Common Redistributables (alt)
+        '250820',  // SteamVR
+        '323180',  // Steam Controller Configs
+      ]);
+
+      // Keywords in game names that indicate non-game entries
+      const nonGameNamePatterns = [
+        /redistributable/i, /proton\s/i, /steamworks/i,
+        /steamvr/i, /steam\s+remote/i, /steam\s+link/i,
+        /steam\s+runtime/i, /steam\s+linux/i,
+        /shader\s+cache/i, /directx\s+runtime/i,
+        /easyanticheat/i, /battleye/i,
+      ];
+
       const vdfPath = path.join(steamPath, 'steamapps', 'libraryfolders.vdf');
       if (fs.existsSync(vdfPath)) {
-        const content = fs.readFileSync(vdfPath, 'utf-8');
-        // Simple parser for Steam VDF library folders
-        const pathMatches = content.match(/"path"\s+"([^"]+)"/g);
-        if (pathMatches) {
-          for (const match of pathMatches) {
-            const libPath = match.replace(/"path"\s+"/, '').replace(/"/, '').replace(/\\\\/g, '\\');
-            const appsDir = path.join(libPath, 'steamapps');
-            if (fs.existsSync(appsDir)) {
-              const files = fs.readdirSync(appsDir);
-              for (const file of files) {
-                if (file.startsWith('appmanifest_') && file.endsWith('.acf')) {
-                  try {
-                    const manifest = fs.readFileSync(path.join(appsDir, file), 'utf-8');
-                    const nameMatch = manifest.match(/"name"\s+"([^"]+)"/);
-                    const appIdMatch = manifest.match(/"appid"\s+"([^"]+)"/);
-                    const installDirMatch = manifest.match(/"installdir"\s+"([^"]+)"/);
-                    if (nameMatch && appIdMatch) {
-                      const name = nameMatch[1];
-                      // Skip Steamworks Common Redistributables and tools
-                      if (name.includes('Redistributable') || name.includes('Proton') || name.includes('Steamworks')) continue;
-                      games.push({
-                        title: name,
-                        platform: 'steam',
-                        app_id: appIdMatch[1],
-                        install_path: installDirMatch
-                          ? path.join(appsDir, 'common', installDirMatch[1])
-                          : null,
-                      });
+        const vdfContent = fs.readFileSync(vdfPath, 'utf-8');
+
+        // Robust VDF path extraction with capture group
+        const pathRegex = /"path"\s+"([^"]+)"/g;
+        let pathMatch;
+
+        while ((pathMatch = pathRegex.exec(vdfContent)) !== null) {
+          // VDF uses \\ for backslash in Windows paths → convert to single \
+          const libPath = pathMatch[1].replace(/\\\\/g, '\\');
+          const appsDir = path.join(libPath, 'steamapps');
+
+          if (!fs.existsSync(appsDir)) continue;
+
+          const files = fs.readdirSync(appsDir);
+          for (const file of files) {
+            if (!file.startsWith('appmanifest_') || !file.endsWith('.acf')) continue;
+
+            try {
+              const manifest = fs.readFileSync(path.join(appsDir, file), 'utf-8');
+
+              const nameMatch = manifest.match(/"name"\s+"([^"]+)"/);
+              const appIdMatch = manifest.match(/"appid"\s+"([^"]+)"/);
+              const installDirMatch = manifest.match(/"installdir"\s+"([^"]+)"/);
+              const launcherPathMatch = manifest.match(/"LauncherPath"\s+"([^"]+)"/);
+
+              if (!nameMatch || !appIdMatch) continue;
+
+              const name = nameMatch[1];
+              const appId = appIdMatch[1];
+
+              // Skip known non-game entries by AppID
+              if (nonGameAppIds.has(appId)) continue;
+              // Skip by name pattern
+              if (nonGameNamePatterns.some((re) => re.test(name))) continue;
+
+              // Resolve install path
+              let installPath = null;
+              if (installDirMatch) {
+                installPath = path.join(appsDir, 'common', installDirMatch[1]);
+              }
+
+              // Check if game files actually exist on disk
+              const isInstalled = installPath && fs.existsSync(installPath);
+
+              // Find game executable
+              let exePath = null;
+              if (isInstalled) {
+                // Try LauncherPath from the manifest first
+                if (launcherPathMatch) {
+                  const lp = launcherPathMatch[1]
+                    .replace(/\\\\/g, '\\')
+                    .replace(/"/g, '');
+                  if (lp && lp.endsWith('.exe')) {
+                    // LauncherPath may be relative to install dir or absolute
+                    const fullPath = path.isAbsolute(lp)
+                      ? lp
+                      : path.join(installPath, lp);
+                    if (fs.existsSync(fullPath)) {
+                      exePath = fullPath;
                     }
-                  } catch (e) {
-                    // skip malformed manifests
                   }
                 }
+                // Fallback: search the install directory for game exe
+                if (!exePath) {
+                  exePath = findExeInDir(installPath, 3);
+                }
               }
+
+              games.push({
+                title: name,
+                platform: 'steam',
+                app_id: appId,
+                install_path: installPath,
+                exe_path: exePath,
+                status: isInstalled ? 'installed' : 'missing',
+              });
+            } catch (e) {
+              // skip malformed manifests
             }
           }
         }
@@ -513,30 +579,57 @@ function scanPlatformGames(platform) {
     }
   }
 
+  // ── Epic Games ──────────────────────────────────────────
   if (platform === 'epic') {
     try {
       const epicPath = getEpicPath();
       if (!epicPath) return games;
 
+      // Known non-game Epic manifest identifiers
+      const nonGameAppNames = [
+        'UE_5', 'UE_4', 'UnrealEngine', 'Fortnite_Clash',
+        'EpicGamesLauncher', 'EpicOnlineServices', 'EOSInstaller',
+        'Twinmotion', 'MetaHuman', 'QuixelBridge', 'RealityScan',
+      ];
+      const nonGameTitleKeywords = [
+        /unreal engine/i, /epic games/i, /epic online services/i,
+        /twinmotion/i, /metahuman/i, /quixel/i, /realityscan/i,
+      ];
+
       const files = fs.readdirSync(epicPath);
       for (const file of files) {
-        if (file.endsWith('.item')) {
-          try {
-            const manifest = fs.readFileSync(path.join(epicPath, file), 'utf-8');
-            const json = JSON.parse(manifest);
-            const name = json.DisplayName || json.AppName;
-            const installPath = json.InstallLocation;
-            if (name) {
-              games.push({
-                title: name,
-                platform: 'epic',
-                app_id: json.CatalogItemId || json.AppName,
-                install_path: installPath || null,
-              });
-            }
-          } catch (e) {
-            // skip malformed manifests
+        if (!file.endsWith('.item')) continue;
+        try {
+          const manifest = fs.readFileSync(path.join(epicPath, file), 'utf-8');
+          const json = JSON.parse(manifest);
+          const name = json.DisplayName || json.AppName;
+          if (!name) continue;
+
+          // Skip non-game items (game engines, launcher, tools)
+          const appName = json.AppName || '';
+          if (nonGameAppNames.some(ng => appName.startsWith(ng))) continue;
+          if (nonGameTitleKeywords.some(re => re.test(name))) continue;
+          if (json.MainGameAppName) continue; // DLC or add-on content
+
+          const installPath = json.InstallLocation || null;
+          let exePath = null;
+          const isInstalled = installPath && fs.existsSync(installPath);
+
+          // Find the game executable in the install directory
+          if (isInstalled) {
+            exePath = findExeInDir(installPath, 3);
           }
+
+          games.push({
+            title: name,
+            platform: 'epic',
+            app_id: json.CatalogItemId || json.AppName,
+            install_path: installPath,
+            exe_path: exePath,
+            status: isInstalled ? 'installed' : 'missing',
+          });
+        } catch (e) {
+          // skip malformed manifests
         }
       }
     } catch (e) {
@@ -544,30 +637,152 @@ function scanPlatformGames(platform) {
     }
   }
 
+  // ── Xbox / Microsoft Store ──────────────────────────────
   if (platform === 'xbox') {
     try {
       const xboxPaths = getXboxPaths();
+      const { execSync } = require('child_process');
+
+      // Strategy: cross-reference XboxGames folders with AppX package metadata
+      // to get proper display names instead of mangled package folder names.
+      let xboxPkgMap = {};
+      try {
+        const psResult = execSync(
+          'powershell -NoProfile -Command "' +
+          "Get-AppxPackage | Where-Object { " +
+          "$_.Publisher -like '*Microsoft*' -or $_.Publisher -like '*Xbox*' -or " +
+          "$_.Name -like '*Microsoft.Gaming*' -or $_.Name -like '*GamePass*' " +
+          "} | Select-Object Name, InstallLocation | ConvertTo-Json -Compress" +
+          '"',
+          { encoding: 'utf-8', timeout: 15000, maxBuffer: 5 * 1024 * 1024 }
+        );
+        if (psResult && psResult.trim()) {
+          const pkgs = JSON.parse(psResult);
+          (Array.isArray(pkgs) ? pkgs : [pkgs]).forEach((pkg) => {
+            if (pkg.Name && pkg.InstallLocation) {
+              // Map by folder name → display info
+              xboxPkgMap[path.basename(pkg.InstallLocation)] = {
+                name: pkg.Name,
+                installPath: pkg.InstallLocation,
+              };
+            }
+          });
+        }
+      } catch (e) {
+        // AppX query failed, will fall back to folder names
+      }
+
+      // Also try to get display names from the Uninstall registry
+      let xboxRegMap = {};
+      try {
+        const regPaths = [
+          'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+          'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+          'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+        ];
+        const regCmd =
+          regPaths.map((rp) => `Get-ChildItem '${rp}' -ErrorAction SilentlyContinue`).join(',') +
+          ` | ForEach-Object { Get-ItemProperty $_.PsPath }` +
+          ` | Where-Object { $_.DisplayName }` +
+          ` | Select-Object DisplayName, InstallLocation, PSChildName` +
+          ` | ConvertTo-Json -Compress`;
+        const regResult = execSync(
+          `powershell -NoProfile -Command "${regCmd.replace(/"/g, '\\"')}"`,
+          { encoding: 'utf-8', timeout: 15000, maxBuffer: 5 * 1024 * 1024 }
+        );
+        if (regResult && regResult.trim()) {
+          const regItems = JSON.parse(regResult);
+          (Array.isArray(regItems) ? regItems : [regItems]).forEach((item) => {
+            if (item.InstallLocation) {
+              const folderName = path.basename(
+                item.InstallLocation.replace(/[\\/]$/, '')
+              );
+              xboxRegMap[folderName] = item.DisplayName;
+              xboxRegMap[item.InstallLocation] = item.DisplayName;
+            }
+          });
+        }
+      } catch (e) {
+        // Registry query failed
+      }
+
       for (const xboxPath of xboxPaths) {
         if (!fs.existsSync(xboxPath)) continue;
         const entries = fs.readdirSync(xboxPath, { withFileTypes: true });
+
         for (const entry of entries) {
-          if (entry.isDirectory()) {
-            const gamePath = path.join(xboxPath, entry.name);
-            // Look for the game executable in the Xbox game folder
-            try {
-              const gameEntries = fs.readdirSync(gamePath, { withFileTypes: true });
-              // Xbox games are typically organized in subfolders with Content/ etc.
-              // Try to find .exe files recursively
-              const exe = findExeInDir(gamePath, 3);
-              games.push({
-                title: entry.name.replace(/[_-]/g, ' '),
-                platform: 'xbox',
-                install_path: gamePath,
-                exe_path: exe || null,
-              });
-            } catch (e) {
-              // skip inaccessible directories
+          if (!entry.isDirectory()) continue;
+          const gameFolderPath = path.join(xboxPath, entry.name);
+
+          try {
+            // Xbox game folder may be the install root directly,
+            // or contain a subfolder with the actual game files.
+            let installPath = gameFolderPath;
+            const subEntries = fs.readdirSync(gameFolderPath, { withFileTypes: true });
+            const contentDir = subEntries.find(
+              (e) => e.isDirectory() && e.name === 'Content'
+            );
+
+            // If there's a Content/ subfolder, game data is inside it
+            if (contentDir) {
+              installPath = path.join(gameFolderPath, 'Content');
             }
+
+            // Try multiple sources for the proper game name
+            let title = null;
+
+            // 1. Check Uninstall registry by install path
+            title = xboxRegMap[installPath] || xboxRegMap[gameFolderPath];
+
+            // 2. Check AppX package metadata by folder name
+            if (!title) {
+              const pkgInfo =
+                xboxPkgMap[entry.name] ||
+                xboxPkgMap[path.basename(installPath)];
+              if (pkgInfo && pkgInfo.name) {
+                // Clean up package name: Microsoft.GameName_8wekyb3d8bbwe → GameName
+                title = pkgInfo.name
+                  .replace(/^Microsoft\./, '')
+                  .replace(/_[a-z0-9]+$/i, '')
+                  .replace(/([a-z])([A-Z])/g, '$1 $2');
+              }
+            }
+
+            // 3. Check registry by Content subfolder name
+            if (!title && contentDir) {
+              const contentSubs = fs.readdirSync(installPath, {
+                withFileTypes: true,
+              });
+              for (const sub of contentSubs) {
+                if (sub.isDirectory() && xboxRegMap[sub.name]) {
+                  title = xboxRegMap[sub.name];
+                  break;
+                }
+              }
+            }
+
+            // 4. Fall back to cleaned folder name
+            if (!title) {
+              title = entry.name
+                .replace(/^Microsoft\./, '')
+                .replace(/_[a-z0-9]+$/i, '')
+                .replace(/[_-]/g, ' ')
+                .replace(/([a-z])([A-Z])/g, '$1 $2')
+                .trim();
+            }
+
+            const exePath = findExeInDir(installPath, 3);
+            const hasExe = !!exePath;
+
+            games.push({
+              title,
+              platform: 'xbox',
+              install_path: installPath,
+              exe_path: exePath,
+              status: hasExe ? 'installed' : 'missing',
+            });
+          } catch (e) {
+            // skip inaccessible directories
           }
         }
       }
@@ -588,26 +803,273 @@ function scanPlatformGames(platform) {
   return games;
 }
 
+// Patterns for non-game executables that should be excluded
+const EXE_EXCLUDE_PATTERNS = [
+  /unins/i, /setup/i, /install/i, /update/i, /updater/i,
+  /redist/i, /dotnet/i, /vc_redist/i, /dxsetup/i,
+  /crash/i, /reporter/i, /bugreport/i, /diag/i,
+  /config/i, /settings/i, /option/i, /tool/i, /editor/i,
+  /server(?!.*game)/i, /dedicated/i, /anticheat/i, /eac_launcher/i,
+  /battleye/i, /prerequisite/i,
+  /helper/i, /service/i, /daemon/i,
+  /patcher/i, /bootstrap/i,
+];
+
+// Directory names to skip when searching for game executables
+const SKIP_EXE_DIRS = new Set([
+  'redist', 'prerequisites', 'crashreporter', 'crash_reporter',
+  'anticheat', 'eac', 'battleye', 'directx', 'dotnet',
+  'support', 'redistributables', '__installer', 'installer',
+]);
+
 function findExeInDir(dirPath, maxDepth) {
-  if (maxDepth < 0) return null;
-  try {
-    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(dirPath, entry.name);
-      if (entry.isFile() && entry.name.endsWith('.exe')) {
-        return fullPath;
+  const candidates = [];
+
+  function collect(currentPath, depth) {
+    if (depth < 0) return;
+    try {
+      const entries = fs.readdirSync(currentPath, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(currentPath, entry.name);
+        if (entry.isFile() && entry.name.endsWith('.exe')) {
+          if (!EXE_EXCLUDE_PATTERNS.some((p) => p.test(entry.name))) {
+            candidates.push(fullPath);
+          }
+        } else if (
+          entry.isDirectory() &&
+          !SKIP_EXE_DIRS.has(entry.name.toLowerCase())
+        ) {
+          collect(fullPath, depth - 1);
+        }
       }
-      if (entry.isDirectory()) {
-        const found = findExeInDir(fullPath, maxDepth - 1);
-        if (found) return found;
-      }
+    } catch (e) {
+      // skip inaccessible
     }
-  } catch (e) {
-    // skip inaccessible
   }
+
+  collect(dirPath, maxDepth);
+  // Return the first candidate (closest to root, most likely the game exe)
+  return candidates.length > 0 ? candidates[0] : null;
+}
+
+// ─── Manual Path Scan: Game Detection ─────────────────────────
+//
+// Three-layer detection strategy for manual directory scanning:
+//   1. Game engine signatures  → highest confidence (immediate match)
+//   2. Executable + resources  → high confidence (exe + large data files)
+//   3. Executable + dir name   → medium confidence (fallback)
+//   Only exe, no signals       → low confidence (likely not a game)
+
+// Game engine signature files — presence of any = high confidence this is a game
+const GAME_ENGINE_SIGNATURES = [
+  { files: ['unityplayer.dll'], engine: 'Unity' },
+  { files: ['gameinfo.gi'], engine: 'Source' },
+  { files: ['gameinfo.txt'], engine: 'Source (legacy)' },
+  { files: ['data.win'], engine: 'GameMaker' },
+  { files: ['options.ini', 'data.win'], engine: 'GameMaker' },
+  { files: ['nw.dll', 'nw.pak'], engine: 'NW.js' },
+  { files: ['nw.exe', 'nw.pak'], engine: 'NW.js' },
+  { files: ['package.nw', 'nw.dll'], engine: 'NW.js' },
+  { files: ['Construct2', 'c2runtime.js'], engine: 'Construct' },
+  { files: ['game.unx'], engine: 'FNA' },
+  { files: ['fna.dll'], engine: 'FNA' },
+  { files: ['rpg_rt.exe'], engine: 'RPG Maker' },
+  { files: ['game.rgss3a'], engine: 'RPG Maker VX Ace' },
+  { files: ['game.rgss2a'], engine: 'RPG Maker VX' },
+  { files: ['game.rgssa'], engine: 'RPG Maker XP' },
+  { files: ['dosbox.exe', 'dosbox.conf'], engine: 'DOSBox' },
+  { files: ['dosbox.exe', '.dosbox.conf'], engine: 'DOSBox' },
+  { files: ['scummvm.exe'], engine: 'ScummVM' },
+];
+
+// Directory names containing these indicate a game (case-insensitive)
+const ENGINE_DIR_HINTS = [
+  { dir: 'unrealengine', hint: 'UnrealEngine', needExe: true },
+  { dir: 'engine', hint: 'UnrealEngine', needExe: true,
+    also: ['binaries', 'content'] },
+];
+
+// Resource/data file extensions typical of games
+const GAME_DATA_EXTENSIONS = new Set([
+  '.pak', '.vpk', '.pk3', '.pk4', '.pk6', '.pk7',
+  '.wad', '.bsp', '.nav', '.arc', '.dat', '.big',
+  '.bms', '.forge', '.cpk', '.afs', '.p5r',
+  '.obb', '.xapk',
+]);
+
+// Directories that should be skipped entirely during manual scanning
+const MANUAL_SKIP_DIRS = new Set([
+  'redist', 'prerequisites', 'crashreporter', 'crash_reporter',
+  'anticheat', 'eac', 'battleye', 'directx', 'dotnet',
+  'support', 'redistributables', '__installer', 'installer',
+  'commonredist', '_commonredist', 'steam_api', 'steamworks',
+  'physx', 'uplay', 'ubisoft', 'origin', 'gog galaxy',
+  'gog games', 'galaxyclient',
+]);
+
+// Directory name patterns that indicate non-game directories
+const MANUAL_DIR_EXCLUDE_PATTERNS = [
+  /^__/i, /^\./, /^\$/,
+  /^\.git$/i, /^\.svn$/i, /^node_modules$/i,
+  /^__pycache__$/i, /\.egg-info$/i,
+];
+
+// Directory name patterns suggesting a game context (boosts confidence)
+const GAME_DIR_KEYWORDS = [
+  /game/i, /games/i,
+];
+
+/**
+ * Detect if a directory contains a known game engine's signature files.
+ * Returns { engine, files } or null.
+ */
+function detectGameEngine(dirEntries, dirPath) {
+  const entryNames = new Set(dirEntries.map((e) => e.name));
+  const entryNameLower = new Set(dirEntries.map((e) => e.name.toLowerCase()));
+
+  // Check file-based signatures
+  for (const sig of GAME_ENGINE_SIGNATURES) {
+    if (sig.files.every((f) => entryNameLower.has(f.toLowerCase()))) {
+      return { engine: sig.engine, files: sig.files };
+    }
+  }
+
+  // Check directory-structure hints (e.g. Unreal Engine layout)
+  for (const hint of ENGINE_DIR_HINTS) {
+    const hasDir = dirEntries.some(
+      (e) =>
+        e.isDirectory() &&
+        e.name.toLowerCase().includes(hint.dir.toLowerCase())
+    );
+    if (hasDir) {
+      if (hint.needExe) {
+        const hasExe = dirEntries.some(
+          (e) => e.isFile() && e.name.endsWith('.exe')
+        );
+        if (!hasExe) continue;
+      }
+      // Additional required subdirectories (e.g. Binaries + Content for UE)
+      if (hint.also) {
+        const subDirNames = dirEntries
+          .filter((e) => e.isDirectory())
+          .map((e) => e.name.toLowerCase());
+        const hasAll = hint.also.every((req) =>
+          subDirNames.some((d) => d.includes(req.toLowerCase()))
+        );
+        if (!hasAll) continue;
+      }
+      return { engine: hint.hint, files: [] };
+    }
+  }
+
+  // Source engine: hl2.exe or game-specific exe + sourceengine/ subdir
+  if (entryNames.has('hl2.exe') || entryNames.has('hl.exe')) {
+    return { engine: 'Source', files: [] };
+  }
+
+  // CryEngine: .pak + .exe combination
+  if (
+    dirEntries.some((e) => e.isFile() && /\.pak$/i.test(e.name)) &&
+    dirEntries.some((e) => e.isFile() && e.name.endsWith('.exe'))
+  ) {
+    return { engine: 'CryEngine', files: [] };
+  }
+
+  // Godot: .pck file + .exe in same directory
+  if (
+    dirEntries.some((e) => e.isFile() && e.name.endsWith('.pck')) &&
+    dirEntries.some((e) => e.isFile() && e.name.endsWith('.exe'))
+  ) {
+    return { engine: 'Godot', files: [] };
+  }
+
+  // Ren'Py: renpy/ directory + lib/ + .exe
+  if (
+    entryNameLower.has('renpy') &&
+    entryNameLower.has('lib') &&
+    dirEntries.some((e) => e.isFile() && e.name.endsWith('.exe'))
+  ) {
+    return { engine: "Ren'Py", files: [] };
+  }
+
+  // GOG game: goggame-*.info + gog.ico
+  if (
+    dirEntries.some((e) => e.isFile() && /^goggame-.*\.info$/i.test(e.name))
+  ) {
+    return { engine: 'GOG', files: [] };
+  }
+
   return null;
 }
 
+/**
+ * Find a game executable in a directory, filtering out tools.
+ * Does NOT recurse into known utility directories.
+ * Returns the full path to the best exe candidate, or null.
+ */
+function findGameExe(dirPath) {
+  const candidates = [];
+
+  function collect(currentPath, depth) {
+    if (depth < 0) return;
+    try {
+      const entries = fs.readdirSync(currentPath, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(currentPath, entry.name);
+        if (entry.isFile() && entry.name.endsWith('.exe')) {
+          if (!EXE_EXCLUDE_PATTERNS.some((p) => p.test(entry.name))) {
+            candidates.push(fullPath);
+          }
+        } else if (
+          entry.isDirectory() &&
+          !SKIP_EXE_DIRS.has(entry.name.toLowerCase())
+        ) {
+          collect(fullPath, depth - 1);
+        }
+      }
+    } catch (e) {
+      // skip inaccessible
+    }
+  }
+
+  collect(dirPath, 3);
+  return candidates.length > 0 ? candidates[0] : null;
+}
+
+/**
+ * Check if a directory contains large game resource/data files (>50 MB).
+ * Returns the total size of matching files, or 0.
+ */
+function checkGameResources(dirEntries, dirPath) {
+  let totalSize = 0;
+  for (const entry of dirEntries) {
+    if (!entry.isFile()) continue;
+    const ext = path.extname(entry.name).toLowerCase();
+    if (!GAME_DATA_EXTENSIONS.has(ext)) continue;
+    if (EXE_EXCLUDE_PATTERNS.some((p) => p.test(entry.name))) continue;
+    try {
+      const stats = fs.statSync(path.join(dirPath, entry.name));
+      if (stats.size > 50 * 1024 * 1024) {
+        totalSize += stats.size;
+      }
+    } catch (e) {
+      // skip
+    }
+  }
+  return totalSize;
+}
+
+/**
+ * Scan a user-specified directory for games.
+ *
+ * Uses a three-layer confidence system:
+ *   - High:   game engine signature detected
+ *   - Medium: executable + large resource files found
+ *   - Low:    executable only (added with 'low' confidence tag)
+ *
+ * Directories identified as games are NOT recursed into,
+ * preventing nested tool subdirectories from appearing as separate games.
+ */
 function scanDirectory(dirPath, maxDepth = 5) {
   const games = [];
 
@@ -617,36 +1079,68 @@ function scanDirectory(dirPath, maxDepth = 5) {
       if (!fs.existsSync(currentPath)) return;
 
       const entries = fs.readdirSync(currentPath, { withFileTypes: true });
-      const exeFiles = [];
       const subDirs = [];
 
       for (const entry of entries) {
-        if (entry.isFile() && entry.name.endsWith('.exe')) {
-          exeFiles.push(entry);
-        }
-        if (entry.isDirectory()) {
-          subDirs.push(entry);
-        }
+        if (entry.isDirectory()) subDirs.push(entry);
       }
 
-      // If this directory has .exe files, treat it as a game
-      if (exeFiles.length > 0) {
-        // Prefer a .exe that looks like a game launcher (not uninstaller/installer)
-        const gameExe = exeFiles.find((e) =>
-          !/unins|setup|install|update|redist|dotnet|vc_redist|dxsetup/i.test(e.name)
-        ) || exeFiles[0];
-
+      // ── Layer 1: Engine detection ─────────────────────────
+      const engine = detectGameEngine(entries, currentPath);
+      if (engine) {
+        const exePath = findGameExe(currentPath);
         games.push({
           title: path.basename(currentPath).replace(/[_-]/g, ' '),
-          exe_path: path.join(currentPath, gameExe.name),
+          exe_path: exePath,
           install_path: currentPath,
           platform: 'manual',
+          engine: engine.engine,
+          status: 'installed',
+          confidence: 'high',
         });
+        return; // confirmed game — don't recurse into children
       }
 
-      // Recurse into subdirectories
+      // ── Layer 2+3: Exe + resources / exe + dir name ──────
+      const exePath = findGameExe(currentPath);
+      if (exePath) {
+        const resourceSize = checkGameResources(entries, currentPath);
+        const hasResources = resourceSize > 0;
+        const dirName = path.basename(currentPath);
+        const nameSuggestsGame = GAME_DIR_KEYWORDS.some((re) =>
+          re.test(dirName)
+        );
+
+        // Determine confidence level
+        let confidence;
+        if (hasResources) {
+          confidence = 'high';
+        } else if (nameSuggestsGame) {
+          confidence = 'medium';
+        } else {
+          confidence = 'low';
+        }
+
+        if (confidence !== 'low') {
+          games.push({
+            title: dirName.replace(/[_-]/g, ' '),
+            exe_path: exePath,
+            install_path: currentPath,
+            platform: 'manual',
+            status: 'installed',
+            confidence,
+          });
+          return; // likely game — don't recurse into children
+        }
+      }
+
+      // Not a confirmed game — recurse into subdirectories
       for (const subDir of subDirs) {
-        scan(path.join(currentPath, subDir.name), depth + 1);
+        const name = subDir.name;
+        // Skip known utility and system directories
+        if (MANUAL_SKIP_DIRS.has(name.toLowerCase())) continue;
+        if (MANUAL_DIR_EXCLUDE_PATTERNS.some((p) => p.test(name))) continue;
+        scan(path.join(currentPath, name), depth + 1);
       }
     } catch (e) {
       // skip inaccessible directories

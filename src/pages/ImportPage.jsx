@@ -40,14 +40,33 @@ function PlatformCard({ platform, onScan, isScanning }) {
 }
 
 function ScannedItem({ game, onImport, isImporting, imported }) {
+  const isInstalled = game.status !== 'missing';
+  const confidenceColors = { high: 'text-success', medium: 'text-warning', low: 'text-text-muted' };
+  const confidenceLabels = { high: '高', medium: '中', low: '低' };
   return (
     <div className="flex items-center gap-3 p-3 rounded-lg hover:bg-white/[0.02] transition-colors">
       <div className="w-10 h-10 rounded-lg bg-bg-surface flex items-center justify-center shrink-0">
-        <GameController size={18} className="text-text-muted" />
+        <GameController size={18} className={isInstalled ? 'text-text-muted' : 'text-text-muted/40'} />
       </div>
       <div className="flex-1 min-w-0">
-        <p className="text-[13px] font-medium text-text-primary truncate">{game.title}</p>
-        <p className="text-[11px] text-text-muted truncate">{game.platform} {game.install_path && `· ${game.install_path}`}</p>
+        <div className="flex items-center" style={{ gap: '8px' }}>
+          <p className="text-[13px] font-medium text-text-primary truncate">{game.title}</p>
+          {game.engine && (
+            <span className="text-[10px] text-accent bg-accent/10 px-1.5 py-0.5 rounded shrink-0">{game.engine}</span>
+          )}
+          {game.confidence && (
+            <span className={`text-[10px] ${confidenceColors[game.confidence] || 'text-text-muted'} bg-white/5 px-1.5 py-0.5 rounded shrink-0`}>
+              {confidenceLabels[game.confidence] || ''}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center" style={{ marginTop: '2px', gap: '6px' }}>
+          <span className={`w-1.5 h-1.5 rounded-full ${isInstalled ? 'bg-success' : 'bg-warning'}`} />
+          <p className="text-[11px] text-text-muted truncate">
+            {game.platform} · {isInstalled ? '已安装' : '未找到安装目录'}
+            {game.install_path && ` · ${game.install_path}`}
+          </p>
+        </div>
       </div>
       <div className="shrink-0">
         {imported ? (
@@ -95,7 +114,7 @@ export default function ImportPage() {
   const handleImport = async (game) => {
     setImportingId(game.title);
     try {
-      await saveGame({ title: game.title, platform: game.platform, install_path: game.install_path || null, exe_path: game.exe_path || null, status: game.install_path ? 'installed' : 'missing', genres: [], playtime: 0, size: 0 });
+      await saveGame({ title: game.title, platform: game.platform, install_path: game.install_path || null, exe_path: game.exe_path || null, status: game.status || (game.install_path ? 'installed' : 'missing'), genres: [], playtime: 0, size: 0 });
       setImportedIds((prev) => new Set([...prev, game.title]));
     } catch (e) { console.error(e); }
     finally { setImportingId(null); }
