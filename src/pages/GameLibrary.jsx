@@ -21,12 +21,19 @@ const SORTS = [
 ];
 
 const fmtH = (m) => !m ? '—' : m < 60 ? `${m}分钟` : `${Math.floor(m/60)}小时`;
-const fmtS = (mb) => !mb ? '—' : mb < 1024 ? `${mb} MB` : `${(mb/1024).toFixed(1)} GB`;
+const getSafeCoverUrl = (url) => {
+  if (!url) return null;
+  if (url.startsWith('data:') || url.startsWith('http') || url.startsWith('file://')) {
+    return url;
+  }
+  const normalizedPath = url.replace(/\\/g, '/');
+  return normalizedPath.startsWith(':') ? `file://${normalizedPath}` : `file://${normalizedPath}`;
+};
 
 const gridItem = { hidden: { opacity: 0, scale: 0.92 }, show: { opacity: 1, scale: 1, transition: { duration: 0.3 } } };
 
 function GameCard({ game, onSelect, isSelected }) {
-  const [cover, setCover] = useState(game.cover_image || null);
+  const [cover, setCover] = useState(getSafeCoverUrl(game.cover_image));
   const [loading, setLoading] = useState(false);
   const imgRef = useRef(null);
 
@@ -40,7 +47,7 @@ function GameCard({ game, onSelect, isSelected }) {
           setLoading(true);
           window.electronAPI?.getGameCover(game).then((dataUrl) => {
             if (!cancelled) {
-              setCover(dataUrl || null);
+              setCover(getSafeCoverUrl(dataUrl));
               setLoading(false);
             }
           });
@@ -86,7 +93,7 @@ function GameCard({ game, onSelect, isSelected }) {
 function DetailPanel({ game, onClose }) {
   const { deleteGame } = useStore();
   const [launchError, setLaunchError] = useState(null);
-  const [cover, setCover] = useState(game.cover_image || null);
+  const [cover, setCover] = useState(getSafeCoverUrl(game.cover_image));
 
   useEffect(() => {
     setCover(game.cover_image || null);
