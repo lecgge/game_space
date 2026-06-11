@@ -1119,11 +1119,11 @@ const ENGINE_DIR_HINTS = [
     also: ['binaries', 'content'] },
 ];
 
-// Resource/data file extensions typical of games
+// Resource/data file extensions typical of games (strict list, no ambiguous types)
 const GAME_DATA_EXTENSIONS = new Set([
   '.pak', '.vpk', '.pk3', '.pk4', '.pk6', '.pk7',
-  '.wad', '.bsp', '.nav', '.arc', '.dat', '.big',
-  '.bms', '.forge', '.cpk', '.afs', '.p5r',
+  '.wad', '.bsp', '.nav',
+  '.forge', '.cpk', '.afs', '.p5r',
   '.obb', '.xapk',
 ]);
 
@@ -1135,6 +1135,14 @@ const MANUAL_SKIP_DIRS = new Set([
   'commonredist', '_commonredist', 'steam_api', 'steamworks',
   'physx', 'uplay', 'ubisoft', 'origin', 'gog galaxy',
   'gog games', 'galaxyclient',
+  // System / runtime / SDK directories
+  'sdk', 'tools', 'toolkit', 'debug', 'dev', 'development',
+  'bin', 'bin32', 'bin64', 'syswow64', 'system32',
+  'runtime', 'framework', 'lib', 'libs', 'libraries',
+  'cache', 'temp', 'tmp', 'logs', 'log',
+  'docs', 'documentation', 'samples', 'examples',
+  'plugins', 'addons', 'mods', 'shaders',
+  'localization', 'locale', 'locales',
 ]);
 
 // Directory name patterns that indicate non-game directories
@@ -1142,12 +1150,28 @@ const MANUAL_DIR_EXCLUDE_PATTERNS = [
   /^__/i, /^\./, /^\$/,
   /^\.git$/i, /^\.svn$/i, /^node_modules$/i,
   /^__pycache__$/i, /\.egg-info$/i,
+  // Windows system components often mistaken for games
+  /^WindowsApps$/i, /^Windows\.old$/i,
+  /^GameBar$/i, /^GameDVR$/i, /^GameOverlay$/i,
+  /^GameMonitor$/i, /^GameLauncher$/i,
+  // Common non-game directories
+  /^Program\s?Files/i, /^ProgramData$/i,
+  /^Microsoft/i, /^Intel$/i, /^AMD$/i, /^NVIDIA$/i,
+  /^Steam$/i, /^Epic\s?Games/i, /^XboxGames$/i,
+  /^Python/i, /^Java/i, /^Jenkins/i,
+  /^Visual\s?Studio/i, /^VSCode/i,
 ];
 
 // Directory name patterns suggesting a game context (boosts confidence)
 const GAME_DIR_KEYWORDS = [
-  /game/i, /games/i,
+  /^games?$/i,  // Only exact match "game" or "games", not substring
 ];
+
+// Minimum exe file size to consider it a game (5 MB)
+const MIN_GAME_EXE_SIZE = 5 * 1024 * 1024;
+
+// Minimum resource file size to count as game data (100 MB)
+const MIN_RESOURCE_SIZE = 100 * 1024 * 1024;
 
 /**
  * Detect if a directory contains a known game engine's signature files.
@@ -1197,10 +1221,11 @@ function detectGameEngine(dirEntries, dirPath) {
     return { engine: 'Source', files: [] };
   }
 
-  // CryEngine: .pak + .exe combination
+  // CryEngine: requires specific directory layout (Engine/ + Bin64/ or Game/ + .pak)
   if (
-    dirEntries.some((e) => e.isFile() && /\.pak$/i.test(e.name)) &&
-    dirEntries.some((e) => e.isFile() && e.name.endsWith('.exe'))
+    entryNames.has('cryengine.dll') ||
+    (entryNames.has('cry3dengine.dll') &&
+     dirEntries.some((e) => e.isFile() && e.name.endsWith('.exe')))
   ) {
     return { engine: 'CryEngine', files: [] };
   }
@@ -1247,9 +1272,14 @@ function findGameExe(dirPath) {
       for (const entry of entries) {
         const fullPath = path.join(currentPath, entry.name);
         if (entry.isFile() && entry.name.endsWith('.exe')) {
-          if (!EXE_EXCLUDE_PATTERNS.some((p) => p.test(entry.name))) {
-            candidates.push(fullPath);
-          }
+          // Skip utility exes by name pattern
+          if (EXE_EXCLUDE_PATTERNS.some((p) => p.test(entry.name))) continue;
+          // Skip tiny executables (helpers, launchers, stubs < 5 MB)
+          try {
+            const stats = fs.statSync(fullPath);
+            if (stats.size < MIN_GAME_EXE_SIZE) continue;
+          } catch (e) { continue; }
+          candidates.push(fullPath);
         } else if (
           entry.isDirectory() &&
           !SKIP_EXE_DIRS.has(entry.name.toLowerCase())
@@ -1267,7 +1297,7 @@ function findGameExe(dirPath) {
 }
 
 /**
- * Check if a directory contains large game resource/data files (>50 MB).
+ * Check if a directory contains large game resource/data files (>100 MB).
  * Returns the total size of matching files, or 0.
  */
 function checkGameResources(dirEntries, dirPath) {
@@ -1279,7 +1309,7 @@ function checkGameResources(dirEntries, dirPath) {
     if (EXE_EXCLUDE_PATTERNS.some((p) => p.test(entry.name))) continue;
     try {
       const stats = fs.statSync(path.join(dirPath, entry.name));
-      if (stats.size > 50 * 1024 * 1024) {
+      if (stats.size > MIN_RESOURCE_SIZE) {
         totalSize += stats.size;
       }
     } catch (e) {
@@ -1292,12 +1322,12 @@ function checkGameResources(dirEntries, dirPath) {
 /**
  * Scan a user-specified directory for games.
  *
- * Uses a three-layer confidence system:
- *   - High:   game engine signature detected
- *   - Medium: executable + large resource files found
- *   - Low:    executable only (added with 'low' confidence tag)
+ * Uses a strict two-layer detection system:
+ *   - Layer 1: Game engine signature detected (high confidence)
+ *   - Layer 2: Executable (>5MB) + large game resource files (>100MB)
  *
- * Directories identified as games are NOT recursed into,
+ * Only high-confidence matches are reported. Everything else is recursed into.
+ * Confirmed game directories are NOT recursed into,
  * preventing nested tool subdirectories from appearing as separate games.
  */
 function scanDirectory(dirPath, maxDepth = 5) {
@@ -1331,36 +1361,24 @@ function scanDirectory(dirPath, maxDepth = 5) {
         return; // confirmed game — don't recurse into children
       }
 
-      // ── Layer 2+3: Exe + resources / exe + dir name ──────
+      // ── Layer 2: Exe + large resource files ────────────
       const exePath = findGameExe(currentPath);
       if (exePath) {
         const resourceSize = checkGameResources(entries, currentPath);
         const hasResources = resourceSize > 0;
-        const dirName = path.basename(currentPath);
-        const nameSuggestsGame = GAME_DIR_KEYWORDS.some((re) =>
-          re.test(dirName)
-        );
 
-        // Determine confidence level
-        let confidence;
+        // Only accept high-confidence results:
+        // engine signature (Layer 1) or exe + large game resource files (Layer 2)
         if (hasResources) {
-          confidence = 'high';
-        } else if (nameSuggestsGame) {
-          confidence = 'medium';
-        } else {
-          confidence = 'low';
-        }
-
-        if (confidence !== 'low') {
           games.push({
-            title: dirName.replace(/[_-]/g, ' '),
+            title: path.basename(currentPath).replace(/[_-]/g, ' '),
             exe_path: exePath,
             install_path: currentPath,
             platform: 'manual',
             status: 'installed',
-            confidence,
+            confidence: 'high',
           });
-          return; // likely game — don't recurse into children
+          return; // confirmed game — don't recurse into children
         }
       }
 
