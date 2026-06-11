@@ -250,7 +250,7 @@ const COVER_FILENAMES = [
   'cover_art', 'coverart', 'folder',
 ];
 
-const MAX_COVER_SIZE = 2 * 1024 * 1024; // 2 MB max
+const MAX_COVER_SIZE = 5 * 1024 * 1024; // 5 MB max
 
 function getMimeType(filePath) {
   const ext = path.extname(filePath).toLowerCase();
@@ -321,13 +321,13 @@ function findCoverInDirectory(installPath) {
   try {
     const entries = fs.readdirSync(installPath, { withFileTypes: true });
 
-    // Pass 1: Match common cover filenames
+    // Pass 1: Match common cover filenames (exact or startsWith)
     for (const target of COVER_FILENAMES) {
       const match = entries.find((e) => {
         if (!e.isFile()) return false;
         const name = path.basename(e.name, path.extname(e.name)).toLowerCase();
         const ext = path.extname(e.name).toLowerCase();
-        return name === target && IMAGE_EXTENSIONS.has(ext);
+        return (name === target || name.startsWith(target + '_') || name.startsWith(target + '-')) && IMAGE_EXTENSIONS.has(ext);
       });
       if (match) {
         const fullPath = path.join(installPath, match.name);
@@ -338,12 +338,11 @@ function findCoverInDirectory(installPath) {
       }
     }
 
-    // Pass 2: Any image file at root level that looks reasonable
+    // Pass 2: Any image file at root level that looks reasonable (>10KB, <5MB)
     for (const entry of entries) {
       if (!entry.isFile()) continue;
       const ext = path.extname(entry.name).toLowerCase();
       if (!IMAGE_EXTENSIONS.has(ext)) continue;
-      if (EXE_EXCLUDE_PATTERNS.some((p) => p.test(entry.name))) continue;
       try {
         const stats = fs.statSync(path.join(installPath, entry.name));
         if (stats.size > 10 * 1024 && stats.size <= MAX_COVER_SIZE) {
@@ -392,10 +391,19 @@ function imageToDataUrl(filePath) {
   }
 }
 
-ipcMain.handle('games:cover', (_, game) => {
+ipcMain.handle('games:cover', async (_, game) => {
   // Check cache first
   if (game.id && coverCache[game.id]) {
     return coverCache[game.id];
+  }
+
+  // If the DB already has a saved cover URL, use it directly
+  if (game.id) {
+    const saved = db.getGame(game.id);
+    if (saved?.cover_image) {
+      coverCache[game.id] = saved.cover_image;
+      return saved.cover_image;
+    }
   }
 
   let coverPath = null;
@@ -410,13 +418,31 @@ ipcMain.handle('games:cover', (_, game) => {
     coverPath = findCoverInDirectory(game.install_path);
   }
 
-  if (!coverPath) return null;
+  let coverUrl = null;
 
-  const dataUrl = imageToDataUrl(coverPath);
-  if (dataUrl && game.id) {
-    coverCache[game.id] = dataUrl;
+  if (coverPath) {
+    coverUrl = imageToDataUrl(coverPath);
   }
-  return dataUrl;
+
+  // Strategy 3: Steam CDN fallback (public URL, no local files needed)
+  if (!coverUrl && game.platform === 'steam' && game.app_id) {
+    coverUrl = `https://cdn.cloudflare.steamstatic.com/steam/apps/${game.app_id}/header.jpg`;
+  }
+
+  // Persist to DB & memory cache so we don't need to re-resolve next time
+  if (coverUrl && game.id) {
+    coverCache[game.id] = coverUrl;
+    try {
+      const existing = db.getGame(game.id);
+      if (existing && !existing.cover_image) {
+        db.saveGame({ ...existing, cover_image: coverUrl });
+      }
+    } catch (e) {
+      console.warn('Cover save error:', e.message);
+    }
+  }
+
+  return coverUrl;
 });
 
 // ─── Platform Scanner ────────────────────────────────────────

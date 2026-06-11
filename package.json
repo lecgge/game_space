@@ -1,6 +1,6 @@
 {
   "name": "game-space",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Game Space - Local PC Game Library Manager",
   "main": "electron/main.js",
   "type": "commonjs",

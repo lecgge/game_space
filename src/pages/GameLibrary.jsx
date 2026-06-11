@@ -38,19 +38,26 @@ function GameCard({ game, onSelect, isSelected }) {
   const imgRef = useRef(null);
 
   useEffect(() => {
-    if (game.cover_image) { setCover(game.cover_image); return; }
+    if (game.cover_image) {
+      setCover(getSafeCoverUrl(game.cover_image));
+      return;
+    }
     if (cover) return; // already loaded
     let cancelled = false;
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting && !cancelled && !cover) {
           setLoading(true);
-          window.electronAPI?.getGameCover(game).then((dataUrl) => {
-            if (!cancelled) {
-              setCover(getSafeCoverUrl(dataUrl));
-              setLoading(false);
-            }
-          });
+          window.electronAPI?.getGameCover(game)
+            .then((dataUrl) => {
+              if (!cancelled) {
+                setCover(getSafeCoverUrl(dataUrl));
+                setLoading(false);
+              }
+            })
+            .catch(() => {
+              if (!cancelled) setLoading(false);
+            });
           observer.disconnect();
         }
       },
@@ -96,11 +103,13 @@ function DetailPanel({ game, onClose }) {
   const [cover, setCover] = useState(getSafeCoverUrl(game.cover_image));
 
   useEffect(() => {
-    setCover(game.cover_image || null);
+    setCover(getSafeCoverUrl(game.cover_image));
     if (!game.cover_image) {
-      window.electronAPI?.getGameCover(game).then((dataUrl) => {
-        setCover(dataUrl || null);
-      });
+      window.electronAPI?.getGameCover(game)
+        .then((dataUrl) => {
+          setCover(getSafeCoverUrl(dataUrl));
+        })
+        .catch(() => {});
     }
   }, [game.id, game.cover_image]);
 
