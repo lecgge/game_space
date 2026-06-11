@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - master
-    tags:
-      - 'v*'
 
 permissions:
   contents: write
@@ -45,15 +43,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-installer
-          path: |
-            release/*.exe
-            release/*.zip
+          path: release/*.exe
 
   release:
     name: Create Release
     needs: build-windows
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
 
     steps:
       - name: Checkout code
@@ -70,29 +65,29 @@ jobs:
         run: |
           VERSION=$(node -p "require('./package.json').version")
           DATE=$(date +'%Y%m%d')
+          TAG="v${VERSION}-${DATE}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=v$VERSION-$DATE" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Using tag: $TAG"
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: Game Space v${{ steps.version.outputs.version }} (${{ github.sha }})
-          body: |
-            ## What's Changed
-            
-            This release was automatically built from commit ${{ github.sha }}.
-            
-            ### Installation
-            Download the `.exe` installer and run it to install Game Space.
-            
-            ### Requirements
-            - Windows 10 or later
-            - No additional dependencies required
-          draft: false
-          prerelease: false
-          files: |
-            release/*.exe
-            release/*.zip
+      - name: Create GitHub Release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          SHA="${{ github.sha }}"
+          
+          gh release create "$TAG" \
+            release/*.exe \
+            --title "Game Space v${VERSION} (${SHA:0:7})" \
+            --notes "## What's Changed
+
+          This release was automatically built from commit ${SHA:0:7}.
+
+          ### Installation
+          Download the \`.exe\` installer and run it to install Game Space.
+
+          ### Requirements
+          - Windows 10 or later
+          - No additional dependencies required"
