@@ -232,6 +232,44 @@ ipcMain.handle('shell:show-item', (_, p) => {
   shell.showItemInFolder(p);
 });
 
+// ─── Game Launch ──────────────────────────────────────────────
+// Steam games: use steam:// protocol (most reliable, handles DRM & auto-update)
+// Other games: use child_process.spawn for fast detached launch
+ipcMain.handle('game:launch', async (_, game) => {
+  try {
+    // Steam: always prefer the steam:// protocol
+    if (game.platform === 'steam' && game.app_id) {
+      const steamUrl = `steam://rungameid/${game.app_id}`;
+      await shell.openExternal(steamUrl);
+      return null; // success
+    }
+
+    // Non-Steam games: launch the exe directly via spawn (faster than shell.openPath)
+    if (game.exe_path && fs.existsSync(game.exe_path)) {
+      const { spawn } = require('child_process');
+      const exeDir = path.dirname(game.exe_path);
+      const child = spawn(game.exe_path, [], {
+        cwd: exeDir,
+        detached: true,
+        stdio: 'ignore',
+      });
+      child.unref();
+      return null; // success
+    }
+
+    // Fallback: try shell.openPath on install_path (Xbox UWP apps etc.)
+    if (game.install_path && fs.existsSync(game.install_path)) {
+      const result = await shell.openPath(game.install_path);
+      if (!result) return null;
+      return result; // error string from openPath
+    }
+
+    return '找不到游戏可执行文件，请检查游戏安装路径';
+  } catch (e) {
+    return `启动失败: ${e.message}`;
+  }
+});
+
 // ─── Game Cover Image ────────────────────────────────────────
 // Cover image search: Steam library cache → install directory → fallback
 

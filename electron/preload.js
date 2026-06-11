@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openDirectoryDialog: () => ipcRenderer.invoke('dialog:open-directory'),
   openPath: (p) => ipcRenderer.invoke('shell:open-path', p),
   showItemInFolder: (p) => ipcRenderer.invoke('shell:show-item', p),
+  launchGame: (game) => ipcRenderer.invoke('game:launch', game),
 
   // ─── Events (Main → Renderer) ─────────────────────────────
   onMaximizeChange: (callback) => {

@@ -100,6 +100,7 @@ function GameCard({ game, onSelect, isSelected }) {
 function DetailPanel({ game, onClose }) {
   const { deleteGame } = useStore();
   const [launchError, setLaunchError] = useState(null);
+  const [launching, setLaunching] = useState(false);
   const [cover, setCover] = useState(getSafeCoverUrl(game.cover_image));
 
   useEffect(() => {
@@ -114,6 +115,19 @@ function DetailPanel({ game, onClose }) {
   }, [game.id, game.cover_image]);
 
   if (!game) return null;
+
+  const handleLaunch = async () => {
+    setLaunchError(null);
+    setLaunching(true);
+    try {
+      const err = await window.electronAPI?.launchGame(game);
+      if (err) setLaunchError(err);
+    } catch (e) {
+      setLaunchError('启动失败: ' + e.message);
+    } finally {
+      setLaunching(false);
+    }
+  };
 
   return (
     <motion.div initial={{ x: 360, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: 360, opacity: 0 }}
@@ -142,12 +156,9 @@ function DetailPanel({ game, onClose }) {
 
         <div className="flex gap-2">
           {game.status === 'installed' ? (
-            <button onClick={async () => {
-              setLaunchError(null);
-              const err = await window.electronAPI?.openPath(game.exe_path);
-              if (err) setLaunchError(err || '启动失败，请检查游戏路径是否正确');
-            }} className="btn btn-cta flex-1">
-              <Play size={14} weight="fill" /> 启动游戏
+            <button onClick={handleLaunch} disabled={launching}
+              className="btn btn-cta flex-1 disabled:opacity-50 disabled:cursor-not-allowed">
+              <Play size={14} weight="fill" /> {launching ? '启动中...' : '启动游戏'}
             </button>
           ) : (
             <button disabled className="btn btn-ghost flex-1 opacity-40 cursor-not-allowed">未安装</button>
