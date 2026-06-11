@@ -78,6 +78,9 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           SHA="${{ github.sha }}"
           
+          # Delete existing release with same tag (from a previous failed run)
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          
           gh release create "$TAG" \
             release/*.exe \
             --title "Game Space v${VERSION} (${SHA:0:7})" \
