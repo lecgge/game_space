@@ -94,11 +94,26 @@ export default function ImportPage() {
   const [dirResults, setDirResults] = useState([]);
   const [scanningDir, setScanningDir] = useState(null);
 
-  useEffect(() => { loadPlatforms(); }, []);
+  useEffect(() => { loadPlatforms(); loadSavedDirs(); }, []);
 
   const loadPlatforms = async () => {
     const result = await window.electronAPI?.scanPlatforms();
     if (result) setPlatforms(result);
+  };
+
+  const loadSavedDirs = async () => {
+    try {
+      const settings = await window.electronAPI?.getAllSettings();
+      if (settings?.scan_dirs?.length) {
+        setScanDirs(settings.scan_dirs);
+      }
+    } catch (e) { console.error('Load saved dirs error:', e); }
+  };
+
+  const persistDirs = async (dirs) => {
+    try {
+      await window.electronAPI?.setSetting('scan_dirs', dirs);
+    } catch (e) { console.error('Save scan dirs error:', e); }
   };
 
   const handleScan = async (platformId) => {
@@ -124,7 +139,9 @@ export default function ImportPage() {
   const handleAddDir = async () => {
     const dir = await window.electronAPI?.openDirectoryDialog();
     if (dir) {
-      setScanDirs((p) => [...p, dir]);
+      const newDirs = [...scanDirs, dir];
+      setScanDirs(newDirs);
+      persistDirs(newDirs);
       setScanningDir(dir);
       try {
         const games = await window.electronAPI?.scanDirectory(dir);
@@ -197,7 +214,7 @@ export default function ImportPage() {
                     className="btn btn-subtle text-[12px]" style={{ padding: '4px 12px' }}>
                     {scanningDir === dir ? <><Spinner size={12} className="animate-spin" /> 扫描中...</> : <><MagnifyingGlass size={12} /> 扫描</>}
                   </button>
-                  <button onClick={() => { setScanDirs((p) => p.filter((d) => d !== dir)); setDirResults((p) => p.filter((r) => r.source_dir !== dir)); }}
+                  <button onClick={() => { const next = scanDirs.filter((d) => d !== dir); setScanDirs(next); persistDirs(next); setDirResults((p) => p.filter((r) => r.source_dir !== dir)); }}
                     className="btn btn-subtle text-[12px] text-error" style={{ padding: '4px 12px' }}><X size={12} /></button>
                 </div>
                 {scanningDir !== dir && !dirResults.some((r) => r.source_dir === dir) && (

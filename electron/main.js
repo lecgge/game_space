@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const path = require('path');
+const https = require('https');
 const Database = require('./database');
 
 let mainWindow = null;
@@ -197,6 +198,34 @@ ipcMain.handle('games:auto-import', async () => {
     }
   }
 
+  // ── Manual scan directories ──────────────────────────────
+  const savedScanDirs = db.getSetting('scan_dirs') || [];
+  for (const dir of savedScanDirs) {
+    if (!fs.existsSync(dir)) continue;
+    try {
+      const scanned = scanDirectory(dir);
+      for (const game of scanned) {
+        const key = `${game.title}|${game.platform}`;
+        if (existingKeys.has(key)) continue;
+        db.saveGame({
+          title: game.title,
+          platform: game.platform || 'manual',
+          app_id: game.app_id || null,
+          install_path: game.install_path || null,
+          exe_path: game.exe_path || null,
+          status: game.status || 'installed',
+          genres: [],
+          playtime: 0,
+          size: 0,
+        });
+        existingKeys.add(key);
+        imported++;
+      }
+    } catch (e) {
+      console.error(`Auto-import manual dir ${dir} error:`, e.message);
+    }
+  }
+
   return { imported };
 });
 
@@ -271,7 +300,82 @@ ipcMain.handle('game:launch', async (_, game) => {
 });
 
 // ─── Game Cover Image ────────────────────────────────────────
-// Cover image search: Steam library cache → install directory → fallback
+// Cover image search: Steam library cache → install directory → CDN download → name search
+
+/**
+ * Download an image from a URL and return it as a base64 data URL.
+ * Needed because Electron's renderer process often blocks direct HTTP
+ * image URLs in <img> tags (CSP / context isolation).
+ */
+function downloadImage(url) {
+  return new Promise((resolve, reject) => {
+    const proto = url.startsWith('https') ? https : require('http');
+    const request = proto.get(url, { timeout: 8000 }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        downloadImage(res.headers.location).then(resolve, reject);
+        return;
+      }
+      if (res.statusCode !== 200) { resolve(null); return; }
+      const contentType = res.headers['content-type'] || 'image/jpeg';
+      const chunks = [];
+      let totalSize = 0;
+      const MAX = 5 * 1024 * 1024; // 5 MB
+      res.on('data', (chunk) => {
+        totalSize += chunk.length;
+        if (totalSize > MAX) { res.destroy(); resolve(null); }
+        chunks.push(chunk);
+      });
+      res.on('end', () => {
+        try {
+          const base64 = Buffer.concat(chunks).toString('base64');
+          resolve(`data:${contentType};base64,${base64}`);
+        } catch (_) { resolve(null); }
+      });
+      res.on('error', () => resolve(null));
+    });
+    request.on('error', () => resolve(null));
+    request.on('timeout', () => { request.destroy(); resolve(null); });
+  });
+}
+
+// Steam manifest name → appId cache (built lazily)
+let steamManifestCache = null;
+
+function buildSteamManifestCache() {
+  if (steamManifestCache) return steamManifestCache;
+  steamManifestCache = new Map();
+  const steamPath = getSteamPath();
+  if (!steamPath) return steamManifestCache;
+  try {
+    const vdfPath = path.join(steamPath, 'steamapps', 'libraryfolders.vdf');
+    if (!fs.existsSync(vdfPath)) return steamManifestCache;
+    const vdfContent = fs.readFileSync(vdfPath, 'utf-8');
+    const pathRegex = /"path"\s+"([^"]+)"/g;
+    let pathMatch;
+    while ((pathMatch = pathRegex.exec(vdfContent)) !== null) {
+      const libPath = pathMatch[1].replace(/\\\\/g, '\\');
+      const appsDir = path.join(libPath, 'steamapps');
+      if (!fs.existsSync(appsDir)) continue;
+      for (const file of fs.readdirSync(appsDir)) {
+        if (!file.startsWith('appmanifest_') || !file.endsWith('.acf')) continue;
+        try {
+          const manifest = fs.readFileSync(path.join(appsDir, file), 'utf-8');
+          const name = manifest.match(/"name"\s+"([^"]+)"/)?.[1];
+          const appId = manifest.match(/"appid"\s+"([^"]+)"/)?.[1];
+          if (name && appId) {
+            steamManifestCache.set(name.toLowerCase(), appId);
+          }
+        } catch (_) {}
+      }
+    }
+  } catch (_) {}
+  return steamManifestCache;
+}
+
+function findSteamAppIdByName(gameName) {
+  const cache = buildSteamManifestCache();
+  return cache.get(gameName.toLowerCase()) || null;
+}
 
 // In-memory cache for cover data URLs (keyed by game id)
 const coverCache = {};
@@ -445,13 +549,14 @@ ipcMain.handle('games:cover', async (_, game) => {
   }
 
   let coverPath = null;
+  let appId = game.app_id || null;
 
   // Strategy 1: Steam library cache (by app_id)
-  if (game.platform === 'steam' && game.app_id) {
-    coverPath = findSteamCover(game.app_id);
+  if (game.platform === 'steam' && appId) {
+    coverPath = findSteamCover(appId);
   }
 
-  // Strategy 2: Search install directory
+  // Strategy 2: Search install directory for cover images
   if (!coverPath) {
     coverPath = findCoverInDirectory(game.install_path);
   }
@@ -462,9 +567,22 @@ ipcMain.handle('games:cover', async (_, game) => {
     coverUrl = imageToDataUrl(coverPath);
   }
 
-  // Strategy 3: Steam CDN fallback (public URL, no local files needed)
-  if (!coverUrl && game.platform === 'steam' && game.app_id) {
-    coverUrl = `https://cdn.cloudflare.steamstatic.com/steam/apps/${game.app_id}/header.jpg`;
+  // Strategy 3: Steam CDN fallback — download as data URL
+  // (Direct HTTP URLs are blocked by Electron's renderer CSP)
+  if (!coverUrl && game.platform === 'steam' && appId) {
+    coverUrl = await downloadImage(
+      `https://cdn.cloudflare.steamstatic.com/steam/apps/${appId}/header.jpg`
+    );
+  }
+
+  // Strategy 4: For non-Steam games, search Steam by game name
+  if (!coverUrl && game.platform !== 'steam' && game.title) {
+    const foundAppId = findSteamAppIdByName(game.title);
+    if (foundAppId) {
+      coverUrl = await downloadImage(
+        `https://cdn.cloudflare.steamstatic.com/steam/apps/${foundAppId}/header.jpg`
+      );
+    }
   }
 
   // Persist to DB & memory cache so we don't need to re-resolve next time
