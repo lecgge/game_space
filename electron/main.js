@@ -1238,6 +1238,33 @@ const MIN_GAME_EXE_SIZE = 5 * 1024 * 1024;
 const MIN_RESOURCE_SIZE = 100 * 1024 * 1024;
 
 /**
+ * Check if a directory is a "game container" — a parent folder that holds
+ * multiple individual game directories rather than being a single game itself.
+ * Returns true when ≥ 2 non-skipped subdirectories each contain an exe at
+ * their root level.  Example: D:\game\ containing 007 First Light\, Starfield\,
+ * WoLongFallenDynasty\ — each with its own exe.
+ */
+function isGameContainer(dirEntries, dirPath) {
+  let gameLikeCount = 0;
+  for (const entry of dirEntries) {
+    if (!entry.isDirectory()) continue;
+    if (MANUAL_SKIP_DIRS.has(entry.name.toLowerCase())) continue;
+    if (MANUAL_DIR_EXCLUDE_PATTERNS.some((p) => p.test(entry.name))) continue;
+
+    const subPath = path.join(dirPath, entry.name);
+    try {
+      const subEntries = fs.readdirSync(subPath, { withFileTypes: true });
+      const hasExe = subEntries.some((e) => e.isFile() && e.name.endsWith('.exe'));
+      if (hasExe) {
+        gameLikeCount++;
+        if (gameLikeCount >= 2) return true; // early exit — clearly a container
+      }
+    } catch (_) { /* skip inaccessible */ }
+  }
+  return false;
+}
+
+/**
  * Detect if a directory contains a known game engine's signature files.
  * Returns { engine, files } or null.
  */
@@ -1431,9 +1458,12 @@ function scanDirectory(dirPath, maxDepth = 5) {
         const resourceSize = checkGameResources(entries, currentPath);
         const hasResources = resourceSize > 0;
 
-        // Only accept high-confidence results:
-        // engine signature (Layer 1) or exe + large game resource files (Layer 2)
-        if (hasResources) {
+        // Guard: if this directory is a container holding multiple game
+        // subdirectories, do NOT claim it as a single game — recurse instead.
+        const isContainer = isGameContainer(entries, currentPath);
+
+        if (hasResources && !isContainer) {
+          // High-confidence: exe + large game resource files
           games.push({
             title: path.basename(currentPath).replace(/[_-]/g, ' '),
             exe_path: exePath,
@@ -1449,20 +1479,23 @@ function scanDirectory(dirPath, maxDepth = 5) {
         // For manually selected directories, a non-trivial exe alone is a
         // reasonable signal.  Many games (especially indie / older titles)
         // do not ship with the specific resource formats checked by Layer 2.
-        try {
-          const exeStats = fs.statSync(exePath);
-          if (exeStats.size >= MIN_GAME_EXE_SIZE) {
-            games.push({
-              title: path.basename(currentPath).replace(/[_-]/g, ' '),
-              exe_path: exePath,
-              install_path: currentPath,
-              platform: 'manual',
-              status: 'installed',
-              confidence: 'medium',
-            });
-            return; // accepted as game — don't recurse into children
-          }
-        } catch (_) { /* skip */ }
+        // Container directories are excluded — they should recurse instead.
+        if (!isContainer) {
+          try {
+            const exeStats = fs.statSync(exePath);
+            if (exeStats.size >= MIN_GAME_EXE_SIZE) {
+              games.push({
+                title: path.basename(currentPath).replace(/[_-]/g, ' '),
+                exe_path: exePath,
+                install_path: currentPath,
+                platform: 'manual',
+                status: 'installed',
+                confidence: 'medium',
+              });
+              return; // accepted as game — don't recurse into children
+            }
+          } catch (_) { /* skip */ }
+        }
       }
 
       // Not a confirmed game — recurse into subdirectories
