@@ -21,6 +21,7 @@ const SORTS = [
 ];
 
 const fmtH = (m) => !m ? '—' : m < 60 ? `${m}分钟` : `${Math.floor(m/60)}小时`;
+const fmtS = (b) => !b ? '—' : b < 1024 ? `${b} MB` : b < 1048576 ? `${(b/1024).toFixed(1)} GB` : `${(b/1048576).toFixed(2)} TB`;
 const getSafeCoverUrl = (url) => {
   if (!url) return null;
   if (url.startsWith('data:') || url.startsWith('http') || url.startsWith('file://')) {
