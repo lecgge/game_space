@@ -1444,6 +1444,25 @@ function scanDirectory(dirPath, maxDepth = 5) {
           });
           return; // confirmed game — don't recurse into children
         }
+
+        // ── Layer 3: Exe only (medium confidence fallback) ──
+        // For manually selected directories, a non-trivial exe alone is a
+        // reasonable signal.  Many games (especially indie / older titles)
+        // do not ship with the specific resource formats checked by Layer 2.
+        try {
+          const exeStats = fs.statSync(exePath);
+          if (exeStats.size >= MIN_GAME_EXE_SIZE) {
+            games.push({
+              title: path.basename(currentPath).replace(/[_-]/g, ' '),
+              exe_path: exePath,
+              install_path: currentPath,
+              platform: 'manual',
+              status: 'installed',
+              confidence: 'medium',
+            });
+            return; // accepted as game — don't recurse into children
+          }
+        } catch (_) { /* skip */ }
       }
 
       // Not a confirmed game — recurse into subdirectories

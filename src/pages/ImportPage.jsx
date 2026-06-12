@@ -92,6 +92,7 @@ export default function ImportPage() {
   const [importedIds, setImportedIds] = useState(new Set());
   const [scanDirs, setScanDirs] = useState([]);
   const [dirResults, setDirResults] = useState([]);
+  const [scanningDir, setScanningDir] = useState(null);
 
   useEffect(() => { loadPlatforms(); }, []);
 
@@ -124,8 +125,12 @@ export default function ImportPage() {
     const dir = await window.electronAPI?.openDirectoryDialog();
     if (dir) {
       setScanDirs((p) => [...p, dir]);
-      const games = await window.electronAPI?.scanDirectory(dir);
-      if (games?.length) setDirResults((p) => [...p, ...games.map((g) => ({ ...g, source_dir: dir }))]);
+      setScanningDir(dir);
+      try {
+        const games = await window.electronAPI?.scanDirectory(dir);
+        if (games?.length) setDirResults((p) => [...p, ...games.map((g) => ({ ...g, source_dir: dir }))]);
+      } catch (e) { console.error('Scan directory error:', e); }
+      finally { setScanningDir(null); }
     }
   };
 
@@ -176,13 +181,28 @@ export default function ImportPage() {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {scanDirs.map((dir) => (
-              <div key={dir} className="ps5-card flex items-center" style={{ padding: '12px', gap: '12px' }}>
-                <FolderOpen size={16} className="text-accent shrink-0" />
-                <span className="flex-1 text-[13px] text-text-primary truncate">{dir}</span>
-                <button onClick={async () => { const g = await window.electronAPI?.scanDirectory(dir); if (g?.length) setDirResults((p) => [...p.filter((r) => r.source_dir !== dir), ...g.map((x) => ({ ...x, source_dir: dir }))]); }}
-                  className="btn btn-subtle text-[12px]" style={{ padding: '4px 12px' }}><MagnifyingGlass size={12} /> 扫描</button>
-                <button onClick={() => setScanDirs((p) => p.filter((d) => d !== dir))}
-                  className="btn btn-subtle text-[12px] text-error" style={{ padding: '4px 12px' }}><X size={12} /></button>
+              <div key={dir}>
+                <div className="ps5-card flex items-center" style={{ padding: '12px', gap: '12px' }}>
+                  <FolderOpen size={16} className="text-accent shrink-0" />
+                  <span className="flex-1 text-[13px] text-text-primary truncate">{dir}</span>
+                  <button disabled={scanningDir === dir}
+                    onClick={async () => {
+                      setScanningDir(dir);
+                      try {
+                        const g = await window.electronAPI?.scanDirectory(dir);
+                        if (g?.length) setDirResults((p) => [...p.filter((r) => r.source_dir !== dir), ...g.map((x) => ({ ...x, source_dir: dir }))]);
+                      } catch (e) { console.error('Scan directory error:', e); }
+                      finally { setScanningDir(null); }
+                    }}
+                    className="btn btn-subtle text-[12px]" style={{ padding: '4px 12px' }}>
+                    {scanningDir === dir ? <><Spinner size={12} className="animate-spin" /> 扫描中...</> : <><MagnifyingGlass size={12} /> 扫描</>}
+                  </button>
+                  <button onClick={() => { setScanDirs((p) => p.filter((d) => d !== dir)); setDirResults((p) => p.filter((r) => r.source_dir !== dir)); }}
+                    className="btn btn-subtle text-[12px] text-error" style={{ padding: '4px 12px' }}><X size={12} /></button>
+                </div>
+                {scanningDir !== dir && !dirResults.some((r) => r.source_dir === dir) && (
+                  <p className="text-[11px] text-text-muted" style={{ padding: '4px 0 0 32px' }}>未在该目录中找到游戏</p>
+                )}
               </div>
             ))}
           </div>
