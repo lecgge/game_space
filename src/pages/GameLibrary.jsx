@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useStore } from '@/store';
 import {
   MagnifyingGlass, GameController, Play, Clock, HardDrive,
@@ -33,7 +33,86 @@ const getSafeCoverUrl = (url) => {
 
 const gridItem = { hidden: { opacity: 0, scale: 0.92 }, show: { opacity: 1, scale: 1, transition: { duration: 0.3 } } };
 
-function GameCard({ game, onSelect, isSelected }) {
+// ─── Context Menu ─────────────────────────────────────────────
+function ContextMenu({ x, y, game, onClose }) {
+  const { deleteGame } = useStore();
+  const menuRef = React.useRef(null);
+  const [pos, setPos] = useState({ x, y });
+
+  // Adjust position to stay within viewport
+  useEffect(() => {
+    if (!menuRef.current) return;
+    const rect = menuRef.current.getBoundingClientRect();
+    let nx = x, ny = y;
+    if (x + rect.width > window.innerWidth - 8) nx = window.innerWidth - rect.width - 8;
+    if (y + rect.height > window.innerHeight - 8) ny = window.innerHeight - rect.height - 8;
+    if (nx !== x || ny !== y) setPos({ x: nx, y: ny });
+  }, [x, y]);
+
+  // Close on click outside / scroll / escape
+  useEffect(() => {
+    const handleClick = (e) => { if (menuRef.current && !menuRef.current.contains(e.target)) onClose(); };
+    const handleKey = (e) => { if (e.key === 'Escape') onClose(); };
+    const handleScroll = () => onClose();
+    document.addEventListener('mousedown', handleClick);
+    document.addEventListener('keydown', handleKey);
+    document.addEventListener('scroll', handleScroll, true);
+    return () => {
+      document.removeEventListener('mousedown', handleClick);
+      document.removeEventListener('keydown', handleKey);
+      document.removeEventListener('scroll', handleScroll, true);
+    };
+  }, [onClose]);
+
+  const handleLaunch = async () => {
+    onClose();
+    try { await window.electronAPI?.launchGame(game); } catch {}
+  };
+
+  const handleOpenFolder = () => {
+    onClose();
+    if (game.install_path) window.electronAPI?.showItemInFolder(game.install_path);
+  };
+
+  const handleDelete = async () => {
+    onClose();
+    if (confirm(`确定要从游戏库中移除「${game.title}」吗？`)) {
+      await deleteGame(game.id);
+    }
+  };
+
+  return (
+    <div ref={menuRef}
+      className="fixed z-[9999] min-w-[160px] py-1.5 rounded-xl shadow-2xl border border-white/10 backdrop-blur-xl"
+      style={{
+        left: pos.x, top: pos.y,
+        background: 'rgba(18, 18, 28, 0.92)',
+      }}>
+      <div className="px-3 py-1.5 text-[11px] text-text-muted font-medium truncate border-b border-white/5" style={{ marginBottom: '4px' }}>
+        {game.title}
+      </div>
+      {game.status === 'installed' && (
+        <button onClick={handleLaunch}
+          className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-text-primary hover:bg-white/8 transition-colors text-left">
+          <Play size={14} weight="fill" className="text-accent" /> 启动游戏
+        </button>
+      )}
+      {game.install_path && (
+        <button onClick={handleOpenFolder}
+          className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-text-primary hover:bg-white/8 transition-colors text-left">
+          <FolderOpen size={14} className="text-text-muted" /> 打开文件夹
+        </button>
+      )}
+      <div className="border-t border-white/5" style={{ margin: '4px 0' }} />
+      <button onClick={handleDelete}
+        className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-error/90 hover:bg-error/10 transition-colors text-left">
+        <Trash size={14} /> 从库中移除
+      </button>
+    </div>
+  );
+}
+
+function GameCard({ game, onSelect, onContextMenu, isSelected }) {
   const [cover, setCover] = useState(getSafeCoverUrl(game.cover_image));
   const [loading, setLoading] = useState(false);
   const [imgError, setImgError] = useState(false);
@@ -63,9 +142,17 @@ function GameCard({ game, onSelect, isSelected }) {
     return () => { cancelled = true; };
   }, [game.id, game.cover_image]);
 
+  const handleContextMenu = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onContextMenu(e.clientX, e.clientY, game);
+  };
+
   return (
-    <motion.div variants={gridItem} layout onClick={() => onSelect(game)}
-      className={`ps5-card ${isSelected ? 'ring-2 ring-accent shadow-lg shadow-accent-glow' : ''}`}>
+    <motion.div variants={gridItem} layout
+      onClick={() => onSelect(game)}
+      onContextMenu={handleContextMenu}
+      className={`ps5-card cursor-default ${isSelected ? 'ring-2 ring-accent shadow-lg shadow-accent-glow' : ''}`}>
       <div className="aspect-[16/10] relative overflow-hidden bg-bg-surface">
         {cover && !imgError ? (
           <img
@@ -216,8 +303,17 @@ function DetailPanel({ game, onClose }) {
 export default function GameLibrary() {
   const { games, totalGames, searchQuery, setSearchQuery, activePlatform, setActivePlatform, sortBy, setSortBy, fetchGames } = useStore();
   const [selectedGame, setSelectedGame] = useState(null);
+  const [contextMenu, setContextMenu] = useState(null);
 
   useEffect(() => { fetchGames(); }, [searchQuery, activePlatform, sortBy, fetchGames]);
+
+  const handleContextMenu = useCallback((x, y, game) => {
+    setContextMenu({ x, y, game });
+  }, []);
+
+  const closeContextMenu = useCallback(() => {
+    setContextMenu(null);
+  }, []);
 
   return (
     <div className="flex" style={{ height: '100%', minHeight: '100%' }}>
@@ -260,13 +356,22 @@ export default function GameLibrary() {
             initial="hidden" animate="show"
             className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] overflow-y-auto" style={{ paddingBottom: '32px', gap: '16px' }}>
             <AnimatePresence mode="popLayout">
-              {games.map((g) => <GameCard key={g.id} game={g} onSelect={setSelectedGame} isSelected={selectedGame?.id === g.id} />)}
+              {games.map((g) => <GameCard key={g.id} game={g} onSelect={setSelectedGame} onContextMenu={handleContextMenu} isSelected={selectedGame?.id === g.id} />)}
             </AnimatePresence>
           </motion.div>
         )}
       </div>
 
       <AnimatePresence>{selectedGame && <DetailPanel game={selectedGame} onClose={() => setSelectedGame(null)} />}</AnimatePresence>
+
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          game={contextMenu.game}
+          onClose={closeContextMenu}
+        />
+      )}
     </div>
   );
 }
