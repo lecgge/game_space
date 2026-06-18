@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useStore } from '@/store';
 import {
   MagnifyingGlass, GameController, Play, Clock, HardDrive,
@@ -36,44 +36,44 @@ const gridItem = { hidden: { opacity: 0, scale: 0.92 }, show: { opacity: 1, scal
 function GameCard({ game, onSelect, isSelected }) {
   const [cover, setCover] = useState(getSafeCoverUrl(game.cover_image));
   const [loading, setLoading] = useState(false);
-  const imgRef = useRef(null);
+  const [imgError, setImgError] = useState(false);
 
   useEffect(() => {
-    if (game.cover_image) {
-      setCover(getSafeCoverUrl(game.cover_image));
+    // If DB already has a cover URL, use it
+    const dbCover = getSafeCoverUrl(game.cover_image);
+    if (dbCover) {
+      setCover(dbCover);
+      setImgError(false);
       return;
     }
-    if (cover) return; // already loaded
+    // Otherwise fetch from backend
     let cancelled = false;
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting && !cancelled && !cover) {
-          setLoading(true);
-          window.electronAPI?.getGameCover(game)
-            .then((dataUrl) => {
-              if (!cancelled) {
-                setCover(getSafeCoverUrl(dataUrl));
-                setLoading(false);
-              }
-            })
-            .catch(() => {
-              if (!cancelled) setLoading(false);
-            });
-          observer.disconnect();
+    setLoading(true);
+    window.electronAPI?.getGameCover(game)
+      .then((url) => {
+        if (!cancelled) {
+          setCover(getSafeCoverUrl(url));
+          setImgError(false);
+          setLoading(false);
         }
-      },
-      { rootMargin: '100px' }
-    );
-    if (imgRef.current) observer.observe(imgRef.current);
-    return () => { cancelled = true; observer.disconnect(); };
+      })
+      .catch(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
   }, [game.id, game.cover_image]);
 
   return (
     <motion.div variants={gridItem} layout onClick={() => onSelect(game)}
       className={`ps5-card ${isSelected ? 'ring-2 ring-accent shadow-lg shadow-accent-glow' : ''}`}>
-      <div className="aspect-[16/10] relative overflow-hidden bg-bg-surface" ref={imgRef}>
-        {cover ? (
-          <img src={cover} alt={game.title} className="w-full h-full object-cover transition-transform duration-500 hover:scale-110" />
+      <div className="aspect-[16/10] relative overflow-hidden bg-bg-surface">
+        {cover && !imgError ? (
+          <img
+            src={cover}
+            alt={game.title}
+            className="w-full h-full object-cover transition-transform duration-500 hover:scale-110"
+            onError={() => setImgError(true)}
+          />
         ) : (
           <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-bg-card to-bg-surface">
             <GameController size={36} weight="light" className={`text-accent/25 ${loading ? 'animate-pulse' : ''}`} />
@@ -103,13 +103,16 @@ function DetailPanel({ game, onClose }) {
   const [launchError, setLaunchError] = useState(null);
   const [launching, setLaunching] = useState(false);
   const [cover, setCover] = useState(getSafeCoverUrl(game.cover_image));
+  const [imgError, setImgError] = useState(false);
 
   useEffect(() => {
-    setCover(getSafeCoverUrl(game.cover_image));
-    if (!game.cover_image) {
+    const dbCover = getSafeCoverUrl(game.cover_image);
+    setCover(dbCover);
+    setImgError(false);
+    if (!dbCover) {
       window.electronAPI?.getGameCover(game)
-        .then((dataUrl) => {
-          setCover(getSafeCoverUrl(dataUrl));
+        .then((url) => {
+          setCover(getSafeCoverUrl(url));
         })
         .catch(() => {});
     }
@@ -135,8 +138,9 @@ function DetailPanel({ game, onClose }) {
       transition={{ type: 'spring', stiffness: 300, damping: 30 }}
       className="w-[340px] shrink-0 glass-heavy border-l border-border overflow-y-auto">
       <div className="aspect-[16/9] relative bg-bg-surface">
-        {cover ? (
-          <img src={cover} alt={game.title} className="w-full h-full object-cover" />
+        {cover && !imgError ? (
+          <img src={cover} alt={game.title} className="w-full h-full object-cover"
+            onError={() => setImgError(true)} />
         ) : (
           <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-bg-card to-bg-surface">
             <GameController size={48} weight="light" className="text-accent/20" />

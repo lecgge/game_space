@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, session } = require('electron');
 const path = require('path');
 const https = require('https');
 const Database = require('./database');
@@ -67,6 +67,22 @@ app.whenReady().then(() => {
   const userDataPath = app.getPath('userData');
   db = new Database(userDataPath);
   db.init();
+
+  // Allow external images (Steam CDN, etc.) and data: URLs in renderer
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [
+          "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: http: https:; " +
+          "img-src 'self' data: blob: http: https:; " +
+          "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+          "font-src 'self' data: https://fonts.gstatic.com; " +
+          "connect-src 'self' https:;",
+        ],
+      },
+    });
+  });
 
   createWindow();
 

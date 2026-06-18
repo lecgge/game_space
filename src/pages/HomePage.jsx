@@ -12,6 +12,13 @@ const fmt = {
   size: (b) => !b ? '0 GB' : b < 1073741824 ? `${Math.round(b/1048576)} MB` : `${(b/1073741824).toFixed(1)} GB`,
 };
 
+const getSafeCoverUrl = (url) => {
+  if (!url) return null;
+  if (url.startsWith('data:') || url.startsWith('http') || url.startsWith('file://')) return url;
+  const normalizedPath = url.replace(/\\/g, '/');
+  return `file://${normalizedPath}`;
+};
+
 const fade = { hidden: { opacity: 0, y: 16 }, show: (i) => ({ opacity: 1, y: 0, transition: { delay: i * 0.07, duration: 0.4, ease: [0.22,1,0.36,1] } }) };
 
 export default function HomePage() {
@@ -107,8 +114,9 @@ export default function HomePage() {
                   onClick={() => navigate('/library')}
                   className="ps5-card" style={{ width: '220px' }}>
                   <div className="aspect-[3/4] relative overflow-hidden bg-bg-surface">
-                    {game.cover_image ? (
-                      <img src={game.cover_image} alt={game.title} className="w-full h-full object-cover" />
+                    {getSafeCoverUrl(game.cover_image) ? (
+                      <img src={getSafeCoverUrl(game.cover_image)} alt={game.title} className="w-full h-full object-cover"
+                        onError={(e) => { e.target.style.display = 'none'; }} />
                     ) : (
                       <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-bg-card to-bg-surface" style={{ gap: '12px' }}>
                         <GameController size={40} weight="light" className="text-accent/30" />
