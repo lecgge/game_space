@@ -436,12 +436,27 @@ function findSteamAppIdByName(gameName) {
 
 /**
  * Search Steam Store API by game name as a last-resort fallback.
+ * Tries multiple locales (US English + CN Chinese) for better coverage.
  * Returns the top result's appId, or null.
  */
 async function searchSteamStore(gameName) {
+  // Try multiple locales for better coverage (Chinese games may only show up in schinese)
+  const locales = [
+    { l: 'english', cc: 'US' },
+    { l: 'schinese', cc: 'CN' },
+  ];
+
+  for (const locale of locales) {
+    const result = await _steamStoreSearchOnce(gameName, locale.l, locale.cc);
+    if (result) return result;
+  }
+  return null;
+}
+
+function _steamStoreSearchOnce(gameName, lang, country) {
   return new Promise((resolve) => {
     const params = encodeURIComponent(gameName);
-    const url = `https://store.steampowered.com/api/storesearch/?term=${params}&l=english&cc=US`;
+    const url = `https://store.steampowered.com/api/storesearch/?term=${params}&l=${lang}&cc=${country}`;
     https.get(url, { timeout: 6000 }, (res) => {
       if (res.statusCode !== 200) { resolve(null); return; }
       let data = '';
@@ -459,6 +474,62 @@ async function searchSteamStore(gameName) {
       res.on('error', () => resolve(null));
     }).on('error', () => resolve(null)).on('timeout', function() { this.destroy(); resolve(null); });
   });
+}
+
+/**
+ * Scrape Steam search results page to find a cover image for a game.
+ * This is more robust than the storesearch API for some titles.
+ * Returns a base64 data URL or null.
+ */
+async function searchSteamCoverFromPage(gameName) {
+  return new Promise((resolve) => {
+    const params = encodeURIComponent(gameName);
+    const url = `https://store.steampowered.com/search/?term=${params}&ndl=1`;
+    https.get(url, { timeout: 8000, headers: { 'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8' } }, (res) => {
+      // Handle redirects
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        https.get(res.headers.location, { timeout: 8000 }, (res2) => {
+          _extractCoverFromSearchHtml(res2, resolve);
+        }).on('error', () => resolve(null));
+        return;
+      }
+      if (res.statusCode !== 200) { resolve(null); return; }
+      _extractCoverFromSearchHtml(res, resolve);
+    }).on('error', () => resolve(null)).on('timeout', function() { this.destroy(); resolve(null); });
+  });
+}
+
+function _extractCoverFromSearchHtml(res, resolve) {
+  let html = '';
+  const MAX = 512 * 1024; // cap HTML size
+  let totalSize = 0;
+  res.on('data', (chunk) => {
+    totalSize += chunk.length;
+    if (totalSize > MAX) { res.destroy(); resolve(null); }
+    html += chunk;
+  });
+  res.on('end', () => {
+    try {
+      // Look for the first search result's app ID and thumbnail
+      // Steam search results have: data-ds-appid="XXXXX" and search_capsule images
+      const appIdMatch = html.match(/data-ds-appid="(\d+)"/);
+      if (appIdMatch) {
+        const appId = appIdMatch[1];
+        // Try to find the capsule image for this app in the HTML
+        const imgRegex = new RegExp(`(https?://cdn\\.cloudflare\\.steamstatic\\.com/steam/apps/${appId}/[^"'>\\s]+\\.(?:jpg|png|webp))`);
+        const imgMatch = html.match(imgRegex);
+        if (imgMatch) {
+          downloadImage(imgMatch[1]).then(resolve);
+          return;
+        }
+        // Fallback: just try the standard header.jpg URL
+        downloadImage(`https://cdn.cloudflare.steamstatic.com/steam/apps/${appId}/header.jpg`).then(resolve);
+        return;
+      }
+      resolve(null);
+    } catch (_) { resolve(null); }
+  });
+  res.on('error', () => resolve(null));
 }
 
 // In-memory cache for cover data URLs (keyed by game id)
@@ -668,12 +739,47 @@ ipcMain.handle('games:cover', async (_, game) => {
   }
 
   // Strategy 5: Search Steam Store API by name (last resort)
+  // Try multiple title variants for better match rate
   if (!coverUrl && game.title) {
-    const searchedId = await searchSteamStore(game.title);
-    if (searchedId) {
-      coverUrl = await downloadImage(
-        `https://cdn.cloudflare.steamstatic.com/steam/apps/${searchedId}/header.jpg`
-      );
+    const searchVariants = [game.title];
+
+    // Add normalized variant (strips edition suffixes, punctuation)
+    const normalized = normalizeTitle(game.title);
+    if (normalized && normalized !== game.title.toLowerCase()) {
+      searchVariants.push(normalized);
+    }
+
+    // Add a simplified variant: strip Xbox-style package name remnants
+    const simplified = game.title
+      .replace(/^Microsoft\./i, '')
+      .replace(/_[a-z0-9]+$/i, '')
+      .replace(/\s+(for Xbox|Xbox Series|Windows 10|PC)$/i, '')
+      .trim();
+    if (simplified && simplified !== game.title) {
+      searchVariants.push(simplified);
+    }
+
+    // Try each variant until we find a cover
+    for (const variant of searchVariants) {
+      const searchedId = await searchSteamStore(variant);
+      if (searchedId) {
+        coverUrl = await downloadImage(
+          `https://cdn.cloudflare.steamstatic.com/steam/apps/${searchedId}/header.jpg`
+        );
+        if (coverUrl) break;
+      }
+    }
+
+    // Strategy 5b: Steam search page HTML scraping (absolute last resort)
+    // The storesearch API sometimes returns empty; the search page is more robust
+    if (!coverUrl) {
+      for (const variant of searchVariants) {
+        const coverFromSearch = await searchSteamCoverFromPage(variant);
+        if (coverFromSearch) {
+          coverUrl = coverFromSearch;
+          break;
+        }
+      }
     }
   }
 
@@ -1142,6 +1248,29 @@ function scanPlatformGames(platform) {
   }
 
   // ── Xbox / Microsoft Store ──────────────────────────────
+  // Blocklist: known non-game Xbox directory / AppX package patterns
+  const XBOX_SKIP_DIR_PATTERNS = [
+    /save/i, /backup/i, /cache/i, /cloud[_\s]?save/i,
+    /game[_\s]?save/i, /gamesave/i, /game[_\s]?pass/i,
+    /gaming[_\s]?services/i, /gaming[_\s]?app/i,
+    /xbox[_\s]?app/i, /xbox[_\s]?identity/i,
+    /xbox[_\s]?tcui/i, /xbox[_\s]?speech/i,
+    /xbox[_\s]?overlay/i, /xbox[_\s]?gaming[_\s]?bar/i,
+    /directx/i, /vcredist/i, /dotnet/i,
+    /windows[_\s]?gaming/i, /microsoft[_\s]?solitaire/i,
+    /microsoft[_\s]?hevc/i, /microsoft[_\s?]av1/i,
+    /ms[_\s]?edge/i, /clipchamp/i,
+  ];
+  const XBOX_SKIP_APPX_NAMES = [
+    /Microsoft\.GamingApp/i, /Microsoft\.GamingServices/i,
+    /Microsoft\.Xbox/i, /Microsoft\.XboxApp/i,
+    /Microsoft\.XboxGameOverlay/i, /Microsoft\.XboxGamingOverlay/i,
+    /Microsoft\.XboxIdentityProvider/i, /Microsoft\.XboxSpeechToTextOverlay/i,
+    /Microsoft\.Xbox\.TCUI/i, /Microsoft\.DirectX/i,
+    /Microsoft\.WindowsAppRuntime/i,
+    /save/i, /backup/i, /cloudsave/i,
+  ];
+
   if (platform === 'xbox') {
     try {
       const xboxPaths = getXboxPaths();
@@ -1277,6 +1406,26 @@ function scanPlatformGames(platform) {
 
             const exePath = findExeInDir(installPath, 3);
             const hasExe = !!exePath;
+
+            // ── Filter out non-game entries (saves, services, runtime, etc.) ──
+            const folderName = entry.name.toLowerCase();
+            const titleLower = (title || '').toLowerCase();
+
+            // 1. Skip if folder name matches known non-game patterns
+            if (XBOX_SKIP_DIR_PATTERNS.some((p) => p.test(folderName))) continue;
+
+            // 2. Skip if resolved title matches known non-game AppX names
+            if (XBOX_SKIP_APPX_NAMES.some((p) => p.test(title))) continue;
+
+            // 3. Skip if AppX package name matches non-game patterns
+            const filterPkgInfo = xboxPkgMap[entry.name] || xboxPkgMap[path.basename(installPath)];
+            if (filterPkgInfo && filterPkgInfo.name && XBOX_SKIP_APPX_NAMES.some((p) => p.test(filterPkgInfo.name))) continue;
+
+            // 4. Skip if no exe found AND no Content directory (likely just data/util folder)
+            if (!hasExe && !contentDir) continue;
+
+            // 5. Skip if title looks like a save/backup entry (Chinese + English keywords)
+            if (/存档|保存|备份|云存档|游戏存档/i.test(titleLower)) continue;
 
             games.push({
               title,
