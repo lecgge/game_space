@@ -357,6 +357,20 @@ function downloadImage(url) {
 // Steam manifest name → appId cache (built lazily)
 let steamManifestCache = null;
 
+/**
+ * Normalize a game title for fuzzy matching.
+ * Strips punctuation, common edition suffixes, and collapses whitespace.
+ */
+function normalizeTitle(title) {
+  return title
+    .toLowerCase()
+    .replace(/[™®©]/g, '')
+    .replace(/[:\-–—·•]/g, ' ')
+    .replace(/\b(the|a|an|definitive|edition|game of the year|goty|deluxe|premium|ultimate|complete|remaster(ed)?|remake|hd| Enhanced|complete edition)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function buildSteamManifestCache() {
   if (steamManifestCache) return steamManifestCache;
   steamManifestCache = new Map();
@@ -380,6 +394,11 @@ function buildSteamManifestCache() {
           const appId = manifest.match(/"appid"\s+"([^"]+)"/)?.[1];
           if (name && appId) {
             steamManifestCache.set(name.toLowerCase(), appId);
+            // Also store the normalized version for fuzzy matching
+            const normalized = normalizeTitle(name);
+            if (normalized && normalized !== name.toLowerCase()) {
+              steamManifestCache.set(normalized, appId);
+            }
           }
         } catch (_) {}
       }
@@ -390,7 +409,56 @@ function buildSteamManifestCache() {
 
 function findSteamAppIdByName(gameName) {
   const cache = buildSteamManifestCache();
-  return cache.get(gameName.toLowerCase()) || null;
+  // Exact match first
+  const exact = cache.get(gameName.toLowerCase());
+  if (exact) return exact;
+  // Normalized match
+  const normalized = normalizeTitle(gameName);
+  if (normalized) {
+    const normMatch = cache.get(normalized);
+    if (normMatch) return normMatch;
+  }
+  // Substring match: check if search title is contained in any cache entry
+  // or vice versa (handles "Witcher 3" vs "The Witcher 3: Wild Hunt")
+  for (const [entryName, appId] of cache) {
+    if (entryName.length < 3) continue;
+    if (entryName.includes(gameName.toLowerCase()) || gameName.toLowerCase().includes(entryName)) {
+      return appId;
+    }
+    const entryNorm = normalizeTitle(entryName);
+    if (entryNorm.length >= 3 && normalized &&
+        (entryNorm.includes(normalized) || normalized.includes(entryNorm))) {
+      return appId;
+    }
+  }
+  return null;
+}
+
+/**
+ * Search Steam Store API by game name as a last-resort fallback.
+ * Returns the top result's appId, or null.
+ */
+async function searchSteamStore(gameName) {
+  return new Promise((resolve) => {
+    const params = encodeURIComponent(gameName);
+    const url = `https://store.steampowered.com/api/storesearch/?term=${params}&l=english&cc=US`;
+    https.get(url, { timeout: 6000 }, (res) => {
+      if (res.statusCode !== 200) { resolve(null); return; }
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(data);
+          if (json.items && json.items.length > 0) {
+            resolve(String(json.items[0].id));
+          } else {
+            resolve(null);
+          }
+        } catch (_) { resolve(null); }
+      });
+      res.on('error', () => resolve(null));
+    }).on('error', () => resolve(null)).on('timeout', function() { this.destroy(); resolve(null); });
+  });
 }
 
 // In-memory cache for cover data URLs (keyed by game id)
@@ -564,39 +632,47 @@ ipcMain.handle('games:cover', async (_, game) => {
     }
   }
 
-  let coverPath = null;
-  let appId = game.app_id || null;
+  let coverUrl = null;
 
-  // Strategy 1: Steam library cache (by app_id)
-  if (game.platform === 'steam' && appId) {
-    coverPath = findSteamCover(appId);
+  // Strategy 1: Steam library cache (local files, by app_id)
+  if (!coverUrl && game.platform === 'steam' && game.app_id) {
+    const coverPath = findSteamCover(game.app_id);
+    if (coverPath) coverUrl = imageToDataUrl(coverPath);
   }
 
   // Strategy 2: Search install directory for cover images
-  if (!coverPath) {
-    coverPath = findCoverInDirectory(game.install_path);
+  if (!coverUrl) {
+    const coverPath = findCoverInDirectory(game.install_path);
+    if (coverPath) coverUrl = imageToDataUrl(coverPath);
   }
 
-  let coverUrl = null;
+  // ── Universal Steam CDN fallback chain ───────────────────
+  // Works for ALL games regardless of platform label.
+  // Most games exist on Steam, so the CDN is a reliable fallback.
 
-  if (coverPath) {
-    coverUrl = imageToDataUrl(coverPath);
-  }
-
-  // Strategy 3: Steam CDN fallback — download as data URL
-  // (Direct HTTP URLs are blocked by Electron's renderer CSP)
-  if (!coverUrl && game.platform === 'steam' && appId) {
+  // Strategy 3: CDN download by known app_id
+  if (!coverUrl && game.app_id) {
     coverUrl = await downloadImage(
-      `https://cdn.cloudflare.steamstatic.com/steam/apps/${appId}/header.jpg`
+      `https://cdn.cloudflare.steamstatic.com/steam/apps/${game.app_id}/header.jpg`
     );
   }
 
-  // Strategy 4: For non-Steam games, search Steam by game name
-  if (!coverUrl && game.platform !== 'steam' && game.title) {
+  // Strategy 4: Find appId by name from local Steam manifests (fuzzy match)
+  if (!coverUrl && game.title) {
     const foundAppId = findSteamAppIdByName(game.title);
     if (foundAppId) {
       coverUrl = await downloadImage(
         `https://cdn.cloudflare.steamstatic.com/steam/apps/${foundAppId}/header.jpg`
+      );
+    }
+  }
+
+  // Strategy 5: Search Steam Store API by name (last resort)
+  if (!coverUrl && game.title) {
+    const searchedId = await searchSteamStore(game.title);
+    if (searchedId) {
+      coverUrl = await downloadImage(
+        `https://cdn.cloudflare.steamstatic.com/steam/apps/${searchedId}/header.jpg`
       );
     }
   }

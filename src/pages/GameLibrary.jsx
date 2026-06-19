@@ -34,6 +34,12 @@ const getSafeCoverUrl = (url) => {
 const gridItem = { hidden: { opacity: 0, scale: 0.92 }, show: { opacity: 1, scale: 1, transition: { duration: 0.3 } } };
 
 // ─── Context Menu ─────────────────────────────────────────────
+const ctxMenuAnim = {
+  hidden: { opacity: 0, scale: 0.92, y: -6 },
+  show: { opacity: 1, scale: 1, y: 0, transition: { duration: 0.18, ease: [0.22, 1, 0.36, 1] } },
+  exit: { opacity: 0, scale: 0.95, y: -4, transition: { duration: 0.12 } },
+};
+
 function ContextMenu({ x, y, game, onClose }) {
   const { deleteGame } = useStore();
   const menuRef = React.useRef(null);
@@ -82,33 +88,49 @@ function ContextMenu({ x, y, game, onClose }) {
   };
 
   return (
-    <div ref={menuRef}
-      className="fixed z-[9999] min-w-[160px] py-1.5 rounded-xl shadow-2xl border border-white/10 backdrop-blur-xl"
-      style={{
-        left: pos.x, top: pos.y,
-        background: 'rgba(18, 18, 28, 0.92)',
-      }}>
-      <div className="px-3 py-1.5 text-[11px] text-text-muted font-medium truncate border-b border-white/5" style={{ marginBottom: '4px' }}>
-        {game.title}
+    <motion.div ref={menuRef}
+      variants={ctxMenuAnim} initial="hidden" animate="show" exit="exit"
+      className="fixed z-[9999] min-w-[180px] rounded-xl shadow-2xl border border-border glass-heavy overflow-hidden"
+      style={{ left: pos.x, top: pos.y }}>
+      {/* Header */}
+      <div className="px-3.5 py-2 truncate border-b border-border" style={{ background: 'var(--color-bg-surface)' }}>
+        <p className="text-[11px] font-semibold text-text-secondary truncate" style={{ fontFamily: 'var(--font-display)' }}>
+          {game.title}
+        </p>
       </div>
-      {game.status === 'installed' && (
-        <button onClick={handleLaunch}
-          className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-text-primary hover:bg-white/8 transition-colors text-left">
-          <Play size={14} weight="fill" className="text-accent" /> 启动游戏
+      {/* Actions */}
+      <div style={{ padding: '4px 0' }}>
+        {game.status === 'installed' && (
+          <button onClick={handleLaunch}
+            className="w-full flex items-center gap-2.5 px-3.5 py-[7px] text-[13px] text-text-primary transition-colors text-left"
+            style={{ cursor: 'pointer' }}
+            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--color-bg-card-hover)'}
+            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}>
+            <Play size={14} weight="fill" className="text-accent" /> 启动游戏
+          </button>
+        )}
+        {game.install_path && (
+          <button onClick={handleOpenFolder}
+            className="w-full flex items-center gap-2.5 px-3.5 py-[7px] text-[13px] text-text-primary transition-colors text-left"
+            style={{ cursor: 'pointer' }}
+            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--color-bg-card-hover)'}
+            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}>
+            <FolderOpen size={14} className="text-text-muted" /> 打开文件夹
+          </button>
+        )}
+      </div>
+      {/* Danger zone */}
+      <div className="border-t border-border" />
+      <div style={{ padding: '4px 0' }}>
+        <button onClick={handleDelete}
+          className="w-full flex items-center gap-2.5 px-3.5 py-[7px] text-[13px] text-error transition-colors text-left"
+          style={{ cursor: 'pointer' }}
+          onMouseEnter={(e) => e.currentTarget.style.background = 'var(--color-error-bg)'}
+          onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}>
+          <Trash size={14} /> 从库中移除
         </button>
-      )}
-      {game.install_path && (
-        <button onClick={handleOpenFolder}
-          className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-text-primary hover:bg-white/8 transition-colors text-left">
-          <FolderOpen size={14} className="text-text-muted" /> 打开文件夹
-        </button>
-      )}
-      <div className="border-t border-white/5" style={{ margin: '4px 0' }} />
-      <button onClick={handleDelete}
-        className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-error/90 hover:bg-error/10 transition-colors text-left">
-        <Trash size={14} /> 从库中移除
-      </button>
-    </div>
+      </div>
+    </motion.div>
   );
 }
 
@@ -364,14 +386,16 @@ export default function GameLibrary() {
 
       <AnimatePresence>{selectedGame && <DetailPanel game={selectedGame} onClose={() => setSelectedGame(null)} />}</AnimatePresence>
 
-      {contextMenu && (
-        <ContextMenu
-          x={contextMenu.x}
-          y={contextMenu.y}
-          game={contextMenu.game}
-          onClose={closeContextMenu}
-        />
-      )}
+      <AnimatePresence>
+        {contextMenu && (
+          <ContextMenu
+            x={contextMenu.x}
+            y={contextMenu.y}
+            game={contextMenu.game}
+            onClose={closeContextMenu}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
