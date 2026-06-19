@@ -571,6 +571,8 @@ const COVER_FILENAMES = [
   'library_600x900', 'library_hero', 'header',
   'icon', 'logo', 'artwork', 'art',
   'cover_art', 'coverart', 'folder',
+  'splashscreen', 'splash', 'widelogo', 'storelogo',
+  'appwindowsplash', 'mediumlogo',
 ];
 
 const MAX_COVER_SIZE = 5 * 1024 * 1024; // 5 MB max
@@ -674,8 +676,8 @@ function findCoverInDirectory(installPath) {
       } catch (e) { /* skip */ }
     }
 
-    // Pass 3: Check common subdirectories (e.g. "art", "media", "images")
-    const artDirs = ['art', 'media', 'images', 'assets', 'textures'];
+    // Pass 3: Check common subdirectories (e.g. "art", "media", "images", "Content" for Xbox)
+    const artDirs = ['art', 'media', 'images', 'assets', 'textures', 'content'];
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       if (!artDirs.includes(entry.name.toLowerCase())) continue;
@@ -837,6 +839,21 @@ ipcMain.handle('games:cover', async (_, game) => {
         if (coverFromSearch) {
           coverUrl = coverFromSearch;
           break;
+        }
+      }
+    }
+
+    // Strategy 5c: Partial title search — try searching individual key words
+    // e.g., "007 First Light" → try "007" or "First Light"
+    if (!coverUrl && searchVariants.length > 0) {
+      const titleWords = game.title.split(/[\s:]+/).filter((w) => w.length >= 3);
+      for (const word of titleWords) {
+        const partialId = await searchSteamStore(word);
+        if (partialId) {
+          const partialCover = await downloadImage(
+            `https://cdn.cloudflare.steamstatic.com/steam/apps/${partialId}/header.jpg`
+          );
+          if (partialCover) { coverUrl = partialCover; break; }
         }
       }
     }
