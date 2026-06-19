@@ -242,7 +242,33 @@ ipcMain.handle('games:auto-import', async () => {
     }
   }
 
-  return { imported };
+  // ── Clean up stale non-game Xbox entries from the DB ────────
+  // Entries like "Game Save" that were imported before filtering was added
+  const XBOX_CLEANUP_PATTERNS = [
+    /game[_\s]?save/i, /save/i, /backup/i, /cache/i,
+    /gaming[_\s]?services/i, /gaming[_\s]?app/i,
+    /xbox[_\s]?app/i, /xbox[_\s]?identity/i, /xbox[_\s]?tcui/i,
+    /存档|保存|备份|云存档|游戏存档/i,
+  ];
+  let cleaned = 0;
+  const currentGames = db.getAllGames().games;
+  for (const g of currentGames) {
+    if (g.platform !== 'xbox') continue;
+    const title = (g.title || '').toLowerCase();
+    const installPath = (g.install_path || '').toLowerCase();
+    if (
+      XBOX_CLEANUP_PATTERNS.some((p) => p.test(title)) ||
+      XBOX_CLEANUP_PATTERNS.some((p) => p.test(installPath)) ||
+      (!g.exe_path && g.status === 'missing')
+    ) {
+      try { db.deleteGame(g.id); cleaned++; } catch (_) {}
+    }
+  }
+  if (cleaned > 0) {
+    console.log(`Auto-cleanup removed ${cleaned} stale Xbox non-game entries`);
+  }
+
+  return { imported, cleaned };
 });
 
 // ─── IPC: Settings ───────────────────────────────────────────
@@ -691,15 +717,37 @@ function imageToDataUrl(filePath) {
 ipcMain.handle('games:cover', async (_, game) => {
   // Check cache first
   if (game.id && coverCache[game.id]) {
-    return coverCache[game.id];
+    // If cached value is a raw HTTP URL, re-download it
+    const cached = coverCache[game.id];
+    if (cached && !cached.startsWith('data:') && cached.startsWith('http')) {
+      const downloaded = await downloadImage(cached);
+      if (downloaded) {
+        coverCache[game.id] = downloaded;
+        try {
+          const existing = db.getGame(game.id);
+          if (existing) db.saveGame({ ...existing, cover_image: downloaded });
+        } catch (_) {}
+        return downloaded;
+      }
+    }
+    return cached;
   }
 
   // If the DB already has a saved cover URL, use it directly
   if (game.id) {
     const saved = db.getGame(game.id);
     if (saved?.cover_image) {
-      coverCache[game.id] = saved.cover_image;
-      return saved.cover_image;
+      let cover = saved.cover_image;
+      // If the DB stores a raw HTTP URL (from older versions), download and convert to base64
+      if (!cover.startsWith('data:') && cover.startsWith('http')) {
+        const downloaded = await downloadImage(cover);
+        if (downloaded) {
+          cover = downloaded;
+          try { db.saveGame({ ...saved, cover_image: cover }); } catch (_) {}
+        }
+      }
+      coverCache[game.id] = cover;
+      return cover;
     }
   }
 
@@ -757,6 +805,17 @@ ipcMain.handle('games:cover', async (_, game) => {
       .trim();
     if (simplified && simplified !== game.title) {
       searchVariants.push(simplified);
+    }
+
+    // Add a camelCase-split variant: "WoLongFallenDynasty" → "Wo Long Fallen Dynasty"
+    const spaced = game.title
+      .replace(/([a-z])([A-Z])/g, '$1 $2')       // lowercase→Uppercase boundary
+      .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')  // "ABCDef" → "ABC Def"
+      .replace(/(\d)([a-zA-Z])/g, '$1 $2')        // "007First" → "007 First"
+      .replace(/([a-zA-Z])(\d)/g, '$1 $2')        // "FF15" → "FF 15"
+      .replace(/\s+/g, ' ').trim();
+    if (spaced && spaced !== game.title) {
+      searchVariants.push(spaced);
     }
 
     // Try each variant until we find a cover
